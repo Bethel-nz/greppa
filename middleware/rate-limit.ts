@@ -1,27 +1,46 @@
-import type { SumiContext } from '@bethel-nz/sumi/types';
-import { createMiddleware } from '@bethel-nz/sumi/router';
+import { createMiddleware } from '@bethel-nz/sumi/router'
+import type { SumiContext } from '@bethel-nz/sumi/types'
+import { redis } from '../lib/redis'
+import { loadGreppaConfig } from '../lib/config'
 
-const WINDOW_MS = 60_000; // 1 minute
-const MAX_REQUESTS = 30;
-
-const store = new Map<string, { count: number; start: number }>();
+async function bumpAndCheck(key: string, windowMs: number, limit: number): Promise<{ ok: boolean; resetIn: number }> {
+  const bucket = Math.floor(Date.now() / windowMs)
+  const fullKey = `${key}:${bucket}`
+  const count = await redis.incr(fullKey)
+  if (count === 1) {
+    await redis.pexpire(fullKey, windowMs)
+  }
+  if (count > limit) {
+    const resetIn = (bucket + 1) * windowMs - Date.now()
+    return { ok: false, resetIn }
+  }
+  return { ok: true, resetIn: 0 }
+}
 
 export default createMiddleware({
   _: async (c: SumiContext, next) => {
-    const key = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip') ?? 'unknown';
-    const now = Date.now();
-    const entry = store.get(key);
+    if (c.get('isDeployer')) return next()
+    const cfg = loadGreppaConfig()
+    const ip =
+      c.req.header('x-forwarded-for')?.split(',')[0].trim() ||
+      c.req.header('x-real-ip') ||
+      'unknown'
+    const sid = c.get('sessionId')
 
-    if (!entry || now - entry.start > WINDOW_MS) {
-      store.set(key, { count: 1, start: now });
-    } else if (entry.count >= MAX_REQUESTS) {
-      const retryAfter = Math.ceil((WINDOW_MS - (now - entry.start)) / 1000);
-      c.header('Retry-After', String(retryAfter));
-      return c.json({ error: 'Rate limit exceeded', retryAfterSeconds: retryAfter }, 429);
-    } else {
-      entry.count++;
+    const ipCheck = await bumpAndCheck(`rate:ip:${ip}`, cfg.rateLimit.ip.windowMs, cfg.rateLimit.ip.limit)
+    if (!ipCheck.ok) {
+      c.header('retry-after-ms', String(ipCheck.resetIn))
+      return c.json({ error: 'rate_limited', scope: 'ip' }, 429)
     }
 
-    await next();
+    if (sid) {
+      const sCheck = await bumpAndCheck(`rate:session:${sid}`, cfg.rateLimit.session.windowMs, cfg.rateLimit.session.limit)
+      if (!sCheck.ok) {
+        c.header('retry-after-ms', String(sCheck.resetIn))
+        return c.json({ error: 'rate_limited', scope: 'session' }, 429)
+      }
+    }
+
+    return next()
   },
-});
+})
