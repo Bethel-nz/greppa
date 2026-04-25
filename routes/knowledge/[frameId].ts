@@ -13,7 +13,7 @@ const updateSchema = z.object({
 export default createRoute({
   get: {
     schema: { param: paramSchema },
-    middleware: ["rate-limit"],
+    middleware: ["session-auth", "rate-limit"],
     handler: async (c) => {
       const { frameId } = c.req.valid("param");
       const mem = await getReader();
@@ -38,7 +38,7 @@ export default createRoute({
 
   patch: {
     schema: { param: paramSchema, json: updateSchema },
-    middleware: ["rate-limit"],
+    middleware: ["session-auth", "rate-limit"],
     handler: async (c) => {
       const { frameId } = c.req.valid("param");
       const updates = c.req.valid("json");
@@ -72,8 +72,13 @@ export default createRoute({
 
   delete: {
     schema: { param: paramSchema },
-    middleware: ["rate-limit"],
+    middleware: ["session-auth", "rate-limit"],
     handler: async (c) => {
+      const { loadGreppaConfig } = await import('../../lib/config')
+      const cfg = loadGreppaConfig()
+      if (!cfg.allowPublicDelete && !c.get('isDeployer')) {
+        return c.json({ error: 'deployer key required' }, 403)
+      }
       const { frameId } = c.req.valid("param");
       const mem = await getWriter();
       const existing = await mem.getFrameInfo(Number(frameId));

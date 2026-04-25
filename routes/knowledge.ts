@@ -25,7 +25,7 @@ const responseSchema = z.object({
 
 export default createRoute({
   get: {
-    middleware: ["rate-limit"],
+    middleware: ["session-auth", "rate-limit"],
     handler: async (c) => {
       const mem = await getReader();
       const tl = await mem.timeline({ limit: 100 });
@@ -55,7 +55,7 @@ export default createRoute({
   // JSON path — plain text articles
   post: {
     schema: { json: jsonBodySchema },
-    middleware: ["rate-limit"],
+    middleware: ["session-auth", "rate-limit"],
     handler: async (c) => {
       const { title, content, tags } = c.req.valid("json");
       const wordCount = content.trim().split(/\s+/).filter(Boolean).length;
@@ -88,7 +88,7 @@ export default createRoute({
 
   // File upload path — PDF, DOCX, etc.
   put: {
-    middleware: ["rate-limit"],
+    middleware: ["session-auth", "rate-limit"],
     handler: async (c) => {
       const body = await c.req.parseBody();
       const file = body["file"];

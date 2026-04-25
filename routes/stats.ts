@@ -12,8 +12,13 @@ const responseSchema = z.object({
 
 export default createRoute({
   get: {
-    middleware: ["rate-limit"],
+    middleware: ["session-auth"],
     handler: async (c) => {
+      const { loadGreppaConfig } = await import('../lib/config')
+      const cfg = loadGreppaConfig()
+      if (!cfg.allowPublicStats && !c.get('isDeployer')) {
+        return c.json({ error: 'deployer key required' }, 403)
+      }
       const mem = await getReader();
       const s = await mem.stats();
       return c.json({
