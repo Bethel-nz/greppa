@@ -5,6 +5,7 @@ export type GreppaConfig = {
   messageTtlMs: number
   allowPublicDelete: boolean
   allowPublicStats: boolean
+  protocolVersion: string
   rateLimit: {
     ip: { windowMs: number; limit: number }
     session: { windowMs: number; limit: number }
@@ -41,6 +42,7 @@ export function loadGreppaConfig(): GreppaConfig {
     messageTtlMs: num('GREPPA_MESSAGE_TTL_MS', 60 * 60 * 1000),
     allowPublicDelete: bool('GREPPA_ALLOW_PUBLIC_DELETE'),
     allowPublicStats: bool('GREPPA_ALLOW_PUBLIC_STATS'),
+    protocolVersion: process.env.GREPPA_PROTOCOL_VERSION || '1',
     rateLimit: {
       ip: {
         windowMs: num('GREPPA_RATE_IP_WINDOW_MS', 60_000),

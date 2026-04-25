@@ -1,6 +1,7 @@
 import { createMiddleware } from '@bethel-nz/sumi/router'
 import type { SumiContext } from '@bethel-nz/sumi/types'
 import { cors } from 'hono/cors'
+import { loadGreppaConfig } from '../lib/config'
 
 const allowedOrigins = (process.env.GREPPA_ALLOWED_ORIGINS ?? '')
   .split(',')
@@ -26,7 +27,8 @@ const corsMw = cors({
 
 export default createMiddleware({
   _: async (c: SumiContext, next) => {
-    c.header('x-greppa-version', '1')
+    const cfg = loadGreppaConfig()
+    c.header('x-greppa-version', cfg.protocolVersion)
     await corsMw(c, async () => {})
     if (c.res.status === 204 || c.req.method === 'OPTIONS') return c.res
     const t0 = Date.now()
