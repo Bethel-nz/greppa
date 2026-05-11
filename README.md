@@ -1,14 +1,29 @@
 # greppa
 
-A personal knowledge API. Ingest articles and documents, then chat with them via streaming AI powered by Groq.
+A reliable AI chat protocol for building systems that remember. Built on an async, resumable, session-scoped architecture that turns LLM inference into a robust message bus — not a fragile blocking call.
+
+**Current release:** Personal knowledge API (single-tenant)  
+**Ambition:** Multi-tenant AI memory protocol
 
 Built with [Sumi](https://github.com/bethel-nz/sumi) (Bun + Hono), [memvid](https://github.com/Bethel-nz/memvid) for RAG, and [Groq](https://groq.com) for LLM inference.
+
+## Why greppa?
+
+Most chat APIs are synchronous request/response: you POST a message and pray the connection holds while the LLM thinks. If the tab refreshes, the network hiccups, or the user closes the laptop — the context is gone.
+
+greppa treats chat as an **async workflow**:
+
+1. **Enqueue** — POST your message to `/chat`. It returns immediately with a job ID.
+2. **Stream** — Subscribe to `/chat/stream` via SSE. If the connection drops, reconnect with `last-event-id` and resume exactly where you left off.
+3. **Remember** — Every session is HMAC-signed, scoped, and retrievable. Conversations survive browser refreshes, network failures, and tab closures.
+
+The assistant (Greppa) uses tool-use to decide whether to search your knowledge base, retrieve relevant context, and stream the answer — or just chat.
 
 ## How it works
 
 1. **Ingest** — POST an article or upload a file to `/knowledge`
-2. **Chat** — POST to `/chat` and get a streaming SSE response
-3. **Greppa** (the assistant) decides whether to search the knowledge base using tool-use, retrieves relevant context, then streams the answer
+2. **Chat** — POST to `/chat` and stream via `/chat/stream`
+3. **Search** — Greppa decides when to query the knowledge base using tool-use
 
 ## API
 
@@ -28,17 +43,11 @@ Built with [Sumi](https://github.com/bethel-nz/sumi) (Bun + Hono), [memvid](http
 
 Full interactive docs available at `/api/v1/docs` when running.
 
-## Protocol + SDK
+## SDK
 
-The chat protocol is documented in `docs/superpowers/specs/2026-04-25-greppa-sdk-and-protocol-design.md`. The SDK lives in `packages/sdk/`.
+### Browser (Fetch + ReadableStream)
 
-Required env: `GREPPA_SESSION_SECRET`, `GREPPA_PUBLIC_URL`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `QSTASH_TOKEN`, `GROQ_API_KEY`. See `.env.example`.
-
-### Browser Usage
-
-The SDK manages HMAC-signed sessions in `sessionStorage` automatically. It uses the modern **Fetch + ReadableStream** pattern to consume SSE.
-
-> **Technical Note:** We avoid the native browser `EventSource` API because it does not support custom headers. The Fetch-based transport allows the SDK to pass critical `x-greppa-session` and `last-event-id` headers, enabling secure, resumable streams.
+The SDK manages HMAC-signed sessions in `sessionStorage` automatically. We avoid the native `EventSource` API because it doesn't support custom headers. The Fetch-based transport passes `x-greppa-session` and `last-event-id`, enabling secure, resumable streams.
 
 ```ts
 import { Greppa } from '@greppa/sdk'
@@ -66,9 +75,7 @@ const final = await handle.done
 console.log('Finished. Sources:', final.sources)
 ```
 
-### React Integration
-
-A full React layer is included in `@greppa/sdk/react`.
+### React
 
 ```tsx
 import { GreppaProvider, useChat } from '@greppa/sdk/react'
@@ -93,7 +100,7 @@ function Chat() {
 }
 ```
 
-### Server Usage (Full Privileges)
+### Server (Full Privileges)
 
 ```ts
 const greppa = new Greppa({ 
@@ -121,12 +128,12 @@ bun run dev
 | Variable | Description |
 |----------|-------------|
 | `GROQ_API_KEY` | Required. Get one at console.groq.com |
-| `MEMORY_PATH` | Path to the `.mv2` knowledge store (default: `chatbot-memory.mv2`) |
 | `GREPPA_SESSION_SECRET` | Required. HMAC secret for sessions (32+ chars) |
 | `GREPPA_PUBLIC_URL` | Required. Public URL of your Greppa server |
 | `UPSTASH_REDIS_REST_URL` | Required. Upstash Redis URL |
 | `UPSTASH_REDIS_REST_TOKEN` | Required. Upstash Redis Token |
 | `QSTASH_TOKEN` | Required. Upstash QStash Token |
+| `MEMORY_PATH` | Path to the `.mv2` knowledge store (default: `chatbot-memory.mv2`) |
 
 ## Deployment
 
@@ -142,10 +149,48 @@ docker compose up -d
 
 The knowledge store is persisted in a Docker volume (`greppa-data`). Set required environment variables in a `.env` file before starting.
 
+## Current Limitations
+
+greppa is a **single-tenant personal knowledge API** today. The architecture supports multi-tenancy (session isolation, scoped contexts, rate limits), but the underlying storage — [memvid](https://github.com/Bethel-nz/memvid) — uses a single `.mv2` file per instance with no native user isolation.
+
+This means:
+- ✅ Perfect for personal use or single-user deployments
+- ✅ All the protocol primitives (sessions, resumable streams, async workflows) are production-ready
+- ❌ Not yet suitable for multi-user SaaS without storage-layer work
+
+## Roadmap
+
+### Now — v1 (Personal)
+- [x] Async chat pipeline with QStash
+- [x] Resumable SSE streams with `last-event-id`
+- [x] HMAC-signed session management
+- [x] Knowledge ingestion + RAG tool-use
+- [x] Browser + React SDK
+- [x] Rate limiting (IP + session scoped)
+
+### Next — v1.5 (Power User)
+- [ ] Multiple knowledge bases per instance (namespace isolation in memvid)
+- [ ] Export/import knowledge bundles
+- [ ] Document parsing pipeline (PDF, Markdown, HTML)
+- [ ] Webhook integrations for knowledge ingestion
+
+### Future — v2 (Protocol)
+- [ ] **Multi-tenant storage adapter** — either contribute isolation to memvid or add a Postgres/pgvector backend
+- [ ] **Organization scoping** — teams, shared knowledge bases, permissions
+- [ ] **Protocol versioning** — the `GREPPA_PROTOCOL_VERSION` header already exists; formalize the contract
+- [ ] **Hosted offering** — greppa.cloud: we host the protocol, you bring the knowledge
+
+The long-term bet is that reliable AI chat — with memory, resumability, and tool-use — should be a protocol, not a product you rebuild from scratch every time.
+
 ## Commands
 
 ```bash
 bun run dev     # development with hot reload
 bun run build   # production build
 bun run start   # start production server
+bun test        # run tests
 ```
+
+## License
+
+MIT
