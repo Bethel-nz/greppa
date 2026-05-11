@@ -1,15 +1,6 @@
 import { describe, expect, test, mock, beforeEach } from 'bun:test'
 
-const zaddCalls: any[] = []
-const expireCalls: any[] = []
 const channelEmits: any[] = []
-
-mock.module('../../lib/redis', () => ({
-  redis: {
-    zadd: (...args: any[]) => { zaddCalls.push(args); return Promise.resolve(1) },
-    expire: (...args: any[]) => { expireCalls.push(args); return Promise.resolve(1) },
-  },
-}))
 
 mock.module('../../lib/realtime', () => ({
   realtime: {
@@ -26,36 +17,38 @@ const { makeEmitter } = await import('../../lib/emit')
 
 describe('makeEmitter', () => {
   beforeEach(() => {
-    zaddCalls.length = 0
-    expireCalls.length = 0
     channelEmits.length = 0
   })
 
-  test('writes to ZSET and emits on channel with monotonic seq', async () => {
+  test('emits on the realtime channel with monotonic seq and a ulid id', async () => {
     const emit = makeEmitter({ messageId: 'msg-1' })
     await emit('cue', { status: 'thinking', at: 1 })
     await emit('token', { token: 'hi' })
-
-    expect(zaddCalls.length).toBe(2)
-    expect(zaddCalls[0][0]).toBe('msg:msg-1:events')
-    expect(zaddCalls[0][1].score).toBe(1)
-    expect(zaddCalls[1][1].score).toBe(2)
 
     expect(channelEmits.length).toBe(2)
     expect(channelEmits[0].channelId).toBe('msg-1')
     expect(channelEmits[0].name).toBe('msg.cue')
     expect(channelEmits[0].payload.type).toBe('cue')
     expect(channelEmits[0].payload.seq).toBe(1)
+    expect(channelEmits[0].payload.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/)
 
     expect(channelEmits[1].name).toBe('msg.token')
     expect(channelEmits[1].payload.seq).toBe(2)
   })
 
-  test('refreshes TTL after each write', async () => {
-    const emit = makeEmitter({ messageId: 'msg-2' })
-    await emit('cue', { status: 'idle', at: 1 })
-    expect(expireCalls.length).toBe(1)
-    expect(expireCalls[0][0]).toBe('msg:msg-2:events')
-    expect(expireCalls[0][1]).toBe(3600)
+  test('emits sources batch', async () => {
+    const emit = makeEmitter({ messageId: 'msg-sources' })
+    await emit('sources', [{ title: 't', snippet: 's', score: 0.9 }])
+    expect(channelEmits[0].name).toBe('msg.sources')
+    expect(channelEmits[0].payload.type).toBe('sources')
+    expect(Array.isArray(channelEmits[0].payload.data)).toBe(true)
+  })
+
+  test('returns the stored event so callers can persist it elsewhere', async () => {
+    const emit = makeEmitter({ messageId: 'msg-3' })
+    const ev = await emit('done', { messageId: 'msg-3', message: 'ok', model: 'm', at: 1 })
+    expect(ev.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/)
+    expect(ev.seq).toBe(1)
+    expect(ev.type).toBe('done')
   })
 })

@@ -1,10 +1,10 @@
 import { create, open } from '@memvid/sdk';
-import { existsSync } from 'fs';
 
 const MEMORY_PATH = process.env.MEMORY_PATH ?? 'chatbot-memory.mv2';
 
 export async function getWriter() {
-  if (!existsSync(MEMORY_PATH)) {
+  const exists = await Bun.file(MEMORY_PATH).exists();
+  if (!exists) {
     const mem = await create(MEMORY_PATH);
     await mem.enableLex();
     return mem;

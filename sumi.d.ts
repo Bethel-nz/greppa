@@ -2,7 +2,7 @@
 // Re-run `sumi dev` to refresh after adding or removing middleware.
 
 declare global {
-  type MiddlewareName = 'rate-limit';
+  type MiddlewareName = 'session-auth' | 'rate-limit' | 'deployer-auth';
 }
 
 export {};

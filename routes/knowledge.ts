@@ -2,9 +2,8 @@ import { z } from "zod";
 import { createRoute } from "@bethel-nz/sumi/router";
 import { resolver } from "hono-openapi/zod";
 import { getWriter, getReader } from "../lib/memory";
-import { tmpdir } from "os";
-import { join } from "path";
-import { unlink } from "fs/promises";
+
+const TMP_DIR = `${import.meta.dir}/../.tmp`;
 
 const jsonBodySchema = z.object({
   title: z.string().min(1).describe("Title of the article or document"),
@@ -108,7 +107,7 @@ export default createRoute({
           : [];
 
       const ext = file.name.split(".").pop() ?? "bin";
-      const tmpPath = join(tmpdir(), `greppa-${Date.now()}.${ext}`);
+      const tmpPath = `${TMP_DIR}/greppa-${crypto.randomUUID()}.${ext}`;
       await Bun.write(tmpPath, file);
 
       try {
@@ -125,7 +124,7 @@ export default createRoute({
           201,
         );
       } finally {
-        unlink(tmpPath).catch(() => {});
+        await Bun.file(tmpPath).delete().catch(() => {});
       }
     },
     openapi: {

@@ -1,46 +1,10 @@
-import { describe, expect, test, beforeEach, mock } from 'bun:test'
+import './_mocks'
+import { describe, expect, test, beforeEach } from 'bun:test'
+import { fakeRedis, zsets, clearRedisState, clearRealtimeState } from './_mocks'
 import { signSessionId } from '../../lib/hmac'
 import { _resetGreppaConfigForTests } from '../../lib/config'
 
 const SECRET = 'e'.repeat(48)
-
-const fakeRedis: Record<string, any> = {}
-const zsets: Record<string, Array<{ score: number; member: string }>> = {}
-
-const redisMock = {
-  zadd: async (key: string, entry: { score: number; member: string }) => {
-    zsets[key] = zsets[key] ?? []
-    zsets[key].push(entry)
-    zsets[key].sort((a, b) => a.score - b.score)
-    return 1
-  },
-  zrange: async (key: string, _s: number, _e: number) =>
-    (zsets[key] ?? []).map((e) => e.member),
-  hset: async (key: string, fields: Record<string, any>) => {
-    fakeRedis[key] = { ...(fakeRedis[key] ?? {}), ...fields }
-    return Object.keys(fields).length
-  },
-  hgetall: async (key: string) => fakeRedis[key] ?? null,
-  expire: async () => 1,
-  pexpire: async () => 1,
-  set: async (key: string, val: any) => { fakeRedis[key] = val; return 'OK' },
-  del: async (key: string) => { delete fakeRedis[key]; delete zsets[key]; return 1 },
-  incr: async (key: string) => {
-    fakeRedis[key] = (fakeRedis[key] ?? 0) + 1
-    return fakeRedis[key]
-  },
-}
-
-mock.module('../../lib/redis', () => ({ redis: redisMock, getRedis: () => redisMock }))
-mock.module('../../lib/realtime', () => ({
-  realtime: { channel: () => ({ emit: async () => {}, on: () => {} }) },
-  realtimeSchema: {},
-  getRealtime: () => ({}),
-}))
-mock.module('../../lib/workflow', () => ({
-  triggerChatWorkflow: async () => {},
-  getWorkflowClient: () => ({}),
-}))
 
 const { createMockApp } = await import('@bethel-nz/sumi/testing')
 
@@ -50,8 +14,8 @@ beforeEach(() => {
   process.env.GREPPA_PUBLIC_URL = 'http://localhost:3000'
   process.env.UPSTASH_REDIS_REST_URL = 'http://localhost:1'
   process.env.UPSTASH_REDIS_REST_TOKEN = 'fake'
-  for (const k of Object.keys(fakeRedis)) delete fakeRedis[k]
-  for (const k of Object.keys(zsets)) delete zsets[k]
+  clearRedisState()
+  clearRealtimeState()
 })
 
 describe('chat flow', () => {

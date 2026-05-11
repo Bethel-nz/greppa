@@ -1,0 +1,176 @@
+import './_mocks'
+import { describe, expect, test, beforeEach } from 'bun:test'
+import { fakeRedis, clearRedisState, clearRealtimeState, seedRealtimeChannel } from './_mocks'
+import { Greppa, ServerSession } from '../../packages/sdk/src/index'
+import { signSessionId } from '../../lib/hmac'
+import { _resetGreppaConfigForTests } from '../../lib/config'
+
+const SECRET = 'f'.repeat(48)
+
+const { createMockApp } = await import('@bethel-nz/sumi/testing')
+
+function createInteropFetch(request: any) {
+  return (async (input: any, init: any) => {
+    const urlString = typeof input === 'string' ? input : (input as URL).toString()
+    const url = new URL(urlString)
+    const path = url.pathname.replace('/api/v1', '') + url.search
+    return request(path || '/', init)
+  }) as typeof fetch
+}
+
+async function seededGreppa(request: any, sid: string): Promise<{ greppa: Greppa; store: ServerSession }> {
+  const store = new ServerSession()
+  await store.set('default', { sessionId: sid, sig: signSessionId(sid, SECRET), mintedAt: Date.now() })
+  const greppa = new Greppa({
+    baseUrl: 'http://localhost/api/v1',
+    fetch: createInteropFetch(request),
+    sessionStore: store,
+  })
+  return { greppa, store }
+}
+
+describe('SDK <-> Server Interop', () => {
+  beforeEach(() => {
+    _resetGreppaConfigForTests()
+    process.env.GREPPA_SESSION_SECRET = SECRET
+    process.env.GREPPA_PUBLIC_URL = 'http://localhost'
+    clearRedisState()
+    clearRealtimeState()
+  })
+
+  test('SDK mints a session and POST /chat persists the user message', async () => {
+    const { request } = await createMockApp({
+      routesDir: 'routes',
+      middlewareDir: 'middleware',
+      basePath: '/api/v1',
+    })
+
+    const greppa = new Greppa({
+      baseUrl: 'http://localhost/api/v1',
+      fetch: createInteropFetch(request),
+      sessionStore: new ServerSession(),
+    })
+
+    const handle = greppa.chat.send('hello interop')
+    // wait for the underlying POST /chat to land before reading state.
+    // wrapPendingHandle defers the actual send into a microtask; awaiting
+    // the messageId via abort() forces resolution of the pending promise
+    // chain without consuming the stream.
+    await new Promise((r) => setTimeout(r, 10))
+    handle.abort()
+
+    const history = await greppa.chat.history()
+    expect(history.sessionId.length).toBeGreaterThan(0)
+    expect(fakeRedis[`session:${history.sessionId}`]).toBeDefined()
+    expect(history.messages.some((m) => m.role === 'user' && m.content === 'hello interop')).toBe(true)
+  })
+
+  test('SDK replays a finished message from the server-side ZSET', async () => {
+    const { request } = await createMockApp({
+      routesDir: 'routes',
+      middlewareDir: 'middleware',
+      basePath: '/api/v1',
+    })
+
+    const sid = '01HINTEROP'
+    const mid = '01HMSG'
+
+    fakeRedis[`msg:${mid}:meta`] = { sessionId: sid, status: 'done' }
+    seedRealtimeChannel(mid, [
+      { event: 'msg.cue',   data: { id: '1', seq: 1, type: 'cue',   data: { status: 'thinking', at: 1 } } },
+      { event: 'msg.token', data: { id: '2', seq: 2, type: 'token', data: { token: 'hi' } } },
+      { event: 'msg.done',  data: { id: '3', seq: 3, type: 'done',  data: { messageId: mid, message: 'hi', model: 'm', at: 2 } } },
+    ])
+
+    const { greppa } = await seededGreppa(request, sid)
+
+    const handle = greppa.chat.resume(mid)
+    const tokens: string[] = []
+    for await (const t of handle.tokens) tokens.push(t.token)
+
+    expect(tokens.join('')).toBe('hi')
+    const final = await handle.done
+    expect(final.message).toBe('hi')
+    expect(final.messageId).toBe(mid)
+  })
+
+  test('SDK resume with last-event-id replays only events after that id', async () => {
+    const { request } = await createMockApp({
+      routesDir: 'routes',
+      middlewareDir: 'middleware',
+      basePath: '/api/v1',
+    })
+
+    const sid = '01HRESUME'
+    const mid = '01HRESUMEMSG'
+
+    fakeRedis[`msg:${mid}:meta`] = { sessionId: sid, status: 'done' }
+    seedRealtimeChannel(mid, [
+      { event: 'msg.token', data: { id: 'e1', seq: 1, type: 'token', data: { token: 'a' } } },
+      { event: 'msg.token', data: { id: 'e2', seq: 2, type: 'token', data: { token: 'b' } } },
+      { event: 'msg.token', data: { id: 'e3', seq: 3, type: 'token', data: { token: 'c' } } },
+      { event: 'msg.done',  data: { id: 'e4', seq: 4, type: 'done',  data: { messageId: mid, message: 'abc', model: 'm', at: 4 } } },
+    ])
+
+    const { greppa } = await seededGreppa(request, sid)
+    const baseFetch = (greppa as any).chat.fetchImpl as typeof fetch
+
+    // Inject `last-event-id: e2` only on the stream call. The server should
+    // skip e1 and e2 in its replay and start from e3.
+    const fetchWithResume: typeof fetch = (async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString()
+      if (url.includes('/chat/stream')) {
+        const headers = new Headers(init?.headers)
+        headers.set('last-event-id', 'e2')
+        return baseFetch(input as any, { ...(init ?? {}), headers })
+      }
+      return baseFetch(input as any, init)
+    }) as typeof fetch
+
+    const greppaResume = new Greppa({
+      baseUrl: 'http://localhost/api/v1',
+      fetch: fetchWithResume,
+      sessionStore: (greppa.chat as any).store,
+    })
+
+    const handle = greppaResume.chat.resume(mid)
+    const tokens: string[] = []
+    for await (const t of handle.tokens) tokens.push(t.token)
+
+    expect(tokens.join('')).toBe('c')
+  })
+
+  test('SDK resume against a foreign sessionId surfaces an error event', async () => {
+    const { request } = await createMockApp({
+      routesDir: 'routes',
+      middlewareDir: 'middleware',
+      basePath: '/api/v1',
+    })
+
+    const ownerSid = '01HOWNER'
+    const otherSid = '01HOTHER'
+    const mid = '01HFOREIGN'
+
+    fakeRedis[`msg:${mid}:meta`] = { sessionId: ownerSid, status: 'done' }
+    // No need to seed channel events - the route rejects on session mismatch
+    // before subscribing.
+
+    const { greppa } = await seededGreppa(request, otherSid)
+
+    const handle = greppa.chat.resume(mid)
+    // The SDK rejects handle.done when the stream ends in error. Attach a
+    // catch up-front so Bun does not report it as an unhandled rejection.
+    handle.done.catch(() => {})
+
+    let errorSeen: { code: string; reason: string } | null = null
+    try {
+      for await (const ev of handle.events) {
+        if (ev.type === 'error') errorSeen = ev.data
+      }
+    } catch {
+      // GreppaError thrown by the events iterator after the error event
+    }
+
+    expect(errorSeen?.code).toBe('not_found')
+  })
+})

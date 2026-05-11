@@ -56,3 +56,6 @@ temp/
 
 # Sumi specific
 .sumi/
+
+# SDK Sub-repository
+packages/greppa-sdk/

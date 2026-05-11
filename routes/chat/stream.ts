@@ -8,12 +8,27 @@ const querySchema = z.object({
   messageId: z.string().min(1),
 })
 
+type StoredEvent = {
+  id: string
+  seq: number
+  type: 'cue' | 'sources' | 'token' | 'done' | 'error'
+  data: unknown
+}
+
 export default createRoute({
   get: {
     schema: { query: querySchema },
     middleware: ['session-auth'],
     stream: async (stream, c) => {
-      const { messageId } = c.req.valid('query')
+      const messageId = c.req.query('messageId')
+      if (!messageId) {
+        await stream.writeSSE({
+          event: 'error',
+          data: JSON.stringify({ code: 'bad_request', reason: 'messageId required' }),
+          id: ulid(),
+        })
+        return
+      }
       const lastEventId = c.req.header('last-event-id')
       const sessionId = c.get('sessionId')
       const isDeployer = c.get('isDeployer')
@@ -31,33 +46,36 @@ export default createRoute({
         return
       }
 
-      const raw = (await redis.zrange(`msg:${messageId}:events`, 0, -1)) as string[]
-      let resumeIndex = 0
-      if (lastEventId) {
-        const idx = raw.findIndex((r) => {
-          try { return JSON.parse(r).id === lastEventId } catch { return false }
-        })
-        if (idx >= 0) resumeIndex = idx + 1
-      }
-      for (const r of raw.slice(resumeIndex)) {
-        let ev: any
-        try { ev = JSON.parse(r) } catch { continue }
-        await stream.writeSSE({ id: ev.id, event: ev.type, data: JSON.stringify(ev.data) })
-      }
-
-      if (meta.status === 'done' || meta.status === 'error') return
-
       const channel = realtime.channel(messageId)
-      await new Promise<void>((resolve) => {
-        const forward = async (ev: any) => {
-          await stream.writeSSE({ id: ev.id, event: ev.type, data: JSON.stringify(ev.data) })
+      let terminated = false
+
+      const forward = async (envelope: { event: string; data: unknown }) => {
+        if (terminated) return
+        const inner = envelope.data as StoredEvent
+        if (lastEventId && inner.id <= lastEventId) return
+        const sseEvent = envelope.event.startsWith('msg.') ? envelope.event.slice(4) : envelope.event
+        await stream.writeSSE({
+          id: inner.id,
+          event: sseEvent,
+          data: JSON.stringify(inner.data),
+        })
+        if (sseEvent === 'done' || sseEvent === 'error') {
+          terminated = true
         }
-        channel.on('msg.cue' as any, forward)
-        channel.on('msg.source' as any, forward)
-        channel.on('msg.token' as any, forward)
-        channel.on('msg.done' as any, async (ev: any) => { await forward(ev); resolve() })
-        channel.on('msg.error' as any, async (ev: any) => { await forward(ev); resolve() })
+      }
+
+      const unsubscribe = await channel.subscribe({
+        events: ['msg.cue', 'msg.sources', 'msg.token', 'msg.done', 'msg.error'],
+        history: true,
+        onData: (envelope) => { void forward(envelope as any) },
       })
+
+      try {
+        // Resolve once a terminal event has been forwarded.
+        while (!terminated) await new Promise((r) => setTimeout(r, 50))
+      } finally {
+        unsubscribe()
+      }
     },
     openapi: {
       summary: 'Subscribe to a chat message stream (replay-then-tail SSE)',

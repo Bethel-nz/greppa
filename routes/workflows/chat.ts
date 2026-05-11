@@ -41,12 +41,13 @@ const SEARCH_TOOL = {
   },
 }
 
-const { POST } = serve(async (workflow) => {
-  const { sessionId, messageId, message, model } = workflow.requestPayload as {
+const workflowHandler = serve(async (workflow) => {
+  const { sessionId, messageId, message, model, context } = workflow.requestPayload as {
     sessionId: string
     messageId: string
     message: string
     model: string
+    context?: { selection?: string; source?: string; title?: string; surrounding?: string }
   }
 
   const cfg = loadGreppaConfig()
@@ -56,7 +57,6 @@ const { POST } = serve(async (workflow) => {
 
   if (isInjectionAttempt(message)) {
     await emit('error', {
-      at: Date.now(),
       code: 'injection_blocked',
       reason: 'I can only help with questions about the knowledge base.',
     })
@@ -80,11 +80,21 @@ const { POST } = serve(async (workflow) => {
       : 'No articles are currently stored.'
   })
 
+  const contextNote = context
+    ? `HIGHLIGHTED CONTEXT:
+${context.selection ? `Selection: "${context.selection}"` : ''}
+${context.title ? `Article: ${context.title}` : ''}
+${context.source ? `Source: ${context.source}` : ''}
+${context.surrounding ? `Surrounding text: ...${context.surrounding}...` : ''}
+(Priority: ground your answer in this context if it relates to the user's question.)`
+    : null
+
   const baseMessages: any[] = [
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'system', content: catalogNote },
-    { role: 'user', content: message },
   ]
+  if (contextNote) baseMessages.push({ role: 'system', content: contextNote })
+  baseMessages.push({ role: 'user', content: message })
 
   await emit('cue', { status: 'thinking', at: Date.now() })
   const probe = await workflow.run('probe', async () => {
@@ -112,7 +122,7 @@ const { POST } = serve(async (workflow) => {
     })
     sources = (result.sources ?? []).map((s: any) => ({ title: s.title, snippet: s.snippet, score: s.score }))
     await emit('cue', { status: 'reading_sources', at: Date.now(), count: sources.length })
-    for (const src of sources) await emit('source', src)
+    await emit('sources', sources)
 
     const safeContext = scanRetrievedSnippet(result.context ?? 'No relevant information found.')
     toolMessages = [
@@ -130,33 +140,44 @@ const { POST } = serve(async (workflow) => {
   })
 
   let content = ''
+  let usage: any = null
   for await (const chunk of completion) {
     const token = chunk.choices[0]?.delta?.content ?? ''
     if (token) {
       content += token
       await emit('token', { token })
     }
+    if ((chunk as any).usage) usage = (chunk as any).usage
   }
 
+  const finishedAt = Date.now()
   const finalMsg = {
     id: messageId,
     role: 'assistant' as const,
     content,
-    at: Date.now(),
+    at: finishedAt,
     sources: sources.length ? sources : undefined,
     model,
-    finishedAt: Date.now(),
+    usage,
+    finishedAt,
   }
   await redis.zadd(`history:${sessionId}`, { score: finalMsg.at, member: JSON.stringify(finalMsg) })
   await redis.expire(`history:${sessionId}`, Math.floor(cfg.sessionTtlMs / 1000))
 
-  await redis.hset(`msg:${messageId}:meta`, { status: 'done', finishedAt: Date.now() })
-  await emit('done', { messageId, at: Date.now() })
+  await redis.hset(`msg:${messageId}:meta`, { status: 'done', finishedAt })
+  await emit('done', {
+    messageId,
+    message: content,
+    sources: sources.length ? sources : undefined,
+    usage,
+    model,
+    at: finishedAt,
+  })
 })
 
 export default createRoute({
   post: {
-    handler: (c) => POST(c.req.raw) as any,
+    handler: workflowHandler as any,
     openapi: { summary: 'Internal: Upstash Workflow chat handler', tags: ['internal'] },
   },
 })
