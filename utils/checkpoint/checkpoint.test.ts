@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { Checkpoint } from './checkpoint'
 import { ConflictError, NotFoundError } from './errors'
 import { MemoryStorage, type StorageBackend } from './storage'
@@ -215,6 +215,96 @@ describe('Checkpoint', () => {
     await new Promise((r) => setTimeout(r, 40))
     cp.stopEviction()
     expect(cp.openCount).toBe(0)
+  })
+
+  test('read after a failed first write throws NotFoundError, not a raw fs error', async () => {
+    const cp = new Checkpoint({ storage: new MemoryStorage(), cacheDir: await cacheDir(), maxOpen: 8, idleMs: 1000 })
+    await expect(
+      cp.write(K('u1'), async () => {
+        throw new Error('callback boom')
+      }),
+    ).rejects.toThrow('callback boom')
+    await expect(cp.read(K('u1'), async () => 'x')).rejects.toBeInstanceOf(NotFoundError)
+  })
+
+  test('a failed flush drops the entry so the next write starts clean', async () => {
+    const base = new MemoryStorage()
+    let failPuts = true
+    const storage: StorageBackend = {
+      head: (k) => base.head(k),
+      get: (k) => base.get(k),
+      list: (p) => base.list(p),
+      delete: (k) => base.delete(k),
+      putIfMatch: async (k, b, e) => {
+        if (failPuts) throw new Error('storage down')
+        return base.putIfMatch(k, b, e)
+      },
+    }
+    const cp = new Checkpoint({ storage, cacheDir: await cacheDir(), maxOpen: 8, idleMs: 1000 })
+    await expect(cp.write(K('u1'), async (p) => writeFile(p, enc.encode('lost')))).rejects.toThrow('storage down')
+
+    failPuts = false
+    const seen: Array<{ exists: boolean; leftover: string | null }> = []
+    await cp.write(K('u1'), async (p, exists) => {
+      const leftover = await readFile(p).then((b) => dec.decode(b), () => null)
+      seen.push({ exists, leftover })
+      await writeFile(p, enc.encode('fresh'))
+    })
+    expect(seen).toEqual([{ exists: false, leftover: null }])
+    expect(dec.decode((await base.get(K('u1')))!.body)).toBe('fresh')
+  })
+
+  test('a cache file deleted out from under the checkpoint fails one read, then recovers', async () => {
+    const storage = new MemoryStorage()
+    let clock = 1000
+    const dir = await cacheDir()
+    const cp = new Checkpoint({ storage, cacheDir: dir, maxOpen: 8, idleMs: 100, now: () => clock })
+    await cp.write(K('u1'), async (p) => writeFile(p, enc.encode('v1')))
+
+    await rm(join(dir, K('u1')))
+    await expect(cp.read(K('u1'), async () => 'x')).rejects.toBeTruthy()
+
+    // The failed read must not pin the entry open forever.
+    clock += 1000
+    await cp.evictIdle()
+    expect(cp.openCount).toBe(0)
+
+    const v = await cp.read(K('u1'), async (p) => dec.decode(await readFile(p)))
+    expect(v).toBe('v1')
+  })
+
+  test('a stale cache file from a previous process is cleared before create', async () => {
+    const dir = await cacheDir()
+    const stalePath = join(dir, K('u1'))
+    await mkdir(dirname(stalePath), { recursive: true })
+    await writeFile(stalePath, enc.encode('stale'))
+
+    const cp = new Checkpoint({ storage: new MemoryStorage(), cacheDir: dir, maxOpen: 8, idleMs: 1000 })
+    const seen: Array<{ exists: boolean; stale: string | null }> = []
+    await cp.write(K('u1'), async (p, exists) => {
+      const stale = await readFile(p).then((b) => dec.decode(b), () => null)
+      seen.push({ exists, stale })
+      await writeFile(p, enc.encode('fresh'))
+    })
+    expect(seen).toEqual([{ exists: false, stale: null }])
+  })
+
+  test('keys cannot traverse outside the cache dir', async () => {
+    const cp = new Checkpoint({ storage: new MemoryStorage(), cacheDir: await cacheDir(), maxOpen: 8, idleMs: 1000 })
+    await expect(cp.write('../escape', async (p) => writeFile(p, enc.encode('x')))).rejects.toThrow(/invalid key/)
+    await expect(cp.read('users/../../escape', async () => 'x')).rejects.toThrow(/invalid key/)
+  })
+
+  test('closeAll stops the eviction timer', async () => {
+    let clock = 1000
+    const cp = new Checkpoint({ storage: new MemoryStorage(), cacheDir: await cacheDir(), maxOpen: 8, idleMs: 50, now: () => clock })
+    cp.startEviction(10)
+    await cp.closeAll()
+
+    await cp.write(K('u1'), async (p) => writeFile(p, enc.encode('a')))
+    clock += 1000
+    await new Promise((r) => setTimeout(r, 40))
+    expect(cp.openCount).toBe(1)
   })
 
   test('delete removes the object and its local copy', async () => {
