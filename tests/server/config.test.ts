@@ -6,7 +6,7 @@ describe('greppa config', () => {
     _resetGreppaConfigForTests()
     delete process.env.GREPPA_SESSION_SECRET
     delete process.env.GREPPA_SESSION_TTL_MS
-    delete process.env.GREPPA_MESSAGE_TTL_MS
+    delete process.env.GREPPA_RESUME_WINDOW_MS
     delete process.env.GREPPA_ALLOW_PUBLIC_DELETE
     delete process.env.GREPPA_ALLOW_PUBLIC_STATS
   })
@@ -21,7 +21,7 @@ describe('greppa config', () => {
     const mod = await import('../../lib/config?defaults' as any).catch(async () => await import('../../lib/config'))
     const cfg = mod.loadGreppaConfig()
     expect(cfg.sessionTtlMs).toBe(1000 * 60 * 60 * 24 * 2)
-    expect(cfg.messageTtlMs).toBe(1000 * 60 * 60)
+    expect(cfg.resumeWindowMs).toBe(300000)
     expect(cfg.allowPublicDelete).toBe(false)
     expect(cfg.allowPublicStats).toBe(false)
   })
@@ -29,13 +29,13 @@ describe('greppa config', () => {
   test('parses overrides from env', async () => {
     process.env.GREPPA_SESSION_SECRET = 'b'.repeat(32)
     process.env.GREPPA_SESSION_TTL_MS = '60000'
-    process.env.GREPPA_MESSAGE_TTL_MS = '5000'
+    process.env.GREPPA_RESUME_WINDOW_MS = '5000'
     process.env.GREPPA_ALLOW_PUBLIC_DELETE = 'true'
     process.env.GREPPA_ALLOW_PUBLIC_STATS = '1'
     const { loadGreppaConfig } = await import('../../lib/config')
     const cfg = loadGreppaConfig()
     expect(cfg.sessionTtlMs).toBe(60000)
-    expect(cfg.messageTtlMs).toBe(5000)
+    expect(cfg.resumeWindowMs).toBe(5000)
     expect(cfg.allowPublicDelete).toBe(true)
     expect(cfg.allowPublicStats).toBe(true)
   })
