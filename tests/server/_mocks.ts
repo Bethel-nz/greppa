@@ -37,6 +37,19 @@ export const redisMock = {
   expire: async () => 1,
   pexpire: async () => 1,
   incr: async (k: string) => { fakeRedis[k] = (Number(fakeRedis[k]) || 0) + 1; return fakeRedis[k] },
+  pipeline: () => {
+    const ops: Array<[string, any[]]> = []
+    const api: any = {
+      zadd: (...a: any[]) => { ops.push(['zadd', a]); return api },
+      expire: (...a: any[]) => { ops.push(['expire', a]); return api },
+      exec: async () => {
+        const out = []
+        for (const [m, a] of ops) out.push(await (redisMock as any)[m](...a))
+        return out
+      },
+    }
+    return api
+  },
 }
 
 type ChannelEvent = { event: string; data: unknown }
