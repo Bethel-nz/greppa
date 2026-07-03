@@ -48,6 +48,7 @@ export class Checkpoint {
   }
 
   private localPathFor(key: string): string {
+    if (key.split('/').includes('..')) throw new Error(`[checkpoint] invalid key: ${key}`)
     return join(this.cacheDir, key)
   }
 
@@ -86,7 +87,10 @@ export class Checkpoint {
       if (!create) throw new NotFoundError(key)
       // Do not pre-create a local file. A 0-byte file is invalid to a native
       // store like Memvid (use() would fail); the write() callback creates the
-      // real file via create(). We only ensure the parent dir exists.
+      // real file via create(). We only ensure the parent dir exists, and clear
+      // any stale cached file left behind by a previous process so create()
+      // sees a free path.
+      await rm(localPath, { force: true })
       return { key, localPath, etag: null, refcount: 0, lastUsed: this.now(), exists: false }
     }
 
@@ -110,9 +114,18 @@ export class Checkpoint {
       const e = await this.ensureOpen(key, false)
       e.refcount++
       e.lastUsed = this.now()
-      const t = `${e.localPath}.rd-${crypto.randomUUID()}`
-      await copyFile(e.localPath, t)
-      return { entry: e, tmp: t }
+      try {
+        const t = `${e.localPath}.rd-${crypto.randomUUID()}`
+        await copyFile(e.localPath, t)
+        return { entry: e, tmp: t }
+      } catch (err) {
+        // The cached file is unusable (e.g. deleted out from under us). Drop
+        // the entry so the next operation re-hydrates from storage, and undo
+        // the refcount so the entry is not pinned open forever.
+        this.open.delete(key)
+        this.release(e)
+        throw err
+      }
     })
     this.evictIfNeeded()
     try {
@@ -140,6 +153,13 @@ export class Checkpoint {
         await this.flush(entry)
         entry.exists = true
         return result
+      } catch (err) {
+        // A failed write leaves the local file in an unknown state (partial
+        // write, or written but never flushed). Drop the entry and the file so
+        // the next operation re-hydrates from storage.
+        this.open.delete(key)
+        await rm(entry.localPath, { force: true })
+        throw err
       } finally {
         this.release(entry)
       }
@@ -201,6 +221,7 @@ export class Checkpoint {
   }
 
   async closeAll(): Promise<void> {
+    this.stopEviction()
     for (const entry of [...this.open.values()]) {
       if (entry.refcount === 0) await this.evict(entry)
     }
@@ -214,12 +235,19 @@ export class Checkpoint {
         if (!victim || entry.lastUsed < victim.lastUsed) victim = entry
       }
       if (!victim) break
-      void this.evict(victim)
+      void this.evict(victim).catch(() => {})
     }
   }
 
-  private async evict(entry: Entry): Promise<void> {
+  private evict(entry: Entry): Promise<void> {
+    // Deleting from the map is synchronous so callers see the open set shrink
+    // immediately, but the file removal must run under the key lock: an
+    // unlocked rm can race a concurrent re-hydration of the same key and
+    // delete the freshly written cache file.
     this.open.delete(entry.key)
-    await rm(entry.localPath, { force: true })
+    return this.withLock(entry.key, async () => {
+      if (this.open.has(entry.key)) return
+      await rm(entry.localPath, { force: true })
+    })
   }
 }
