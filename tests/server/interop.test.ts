@@ -1,13 +1,19 @@
 import './_mocks'
-import { describe, expect, test, beforeEach } from 'bun:test'
+import { describe, expect, test, beforeAll, beforeEach } from 'bun:test'
 import { fakeRedis, clearRedisState, clearRealtimeState, seedRealtimeChannel } from './_mocks'
-import { Greppa, ServerSession } from '../../packages/sdk/src/index'
-import { signSessionId } from '../../lib/hmac'
-import { _resetGreppaConfigForTests } from '../../lib/config'
+import { Greppa, ServerSession } from '../../packages/greppa-sdk/src/index'
+import { _resetGreppaConfigForTests } from '~/lib/config'
 
 const SECRET = 'f'.repeat(48)
 
 const { createMockApp } = await import('@bethel-nz/sumi/testing')
+
+function setEnv() {
+  process.env.GREPPA_SESSION_SECRET = SECRET
+  process.env.GREPPA_PUBLIC_URL = 'http://localhost'
+  process.env.DATABASE_URL = 'postgres://postgres:postgres@localhost:5432/greppa'
+  process.env.BETTER_AUTH_SECRET = 'test-secret-1234567890123456789012345678'
+}
 
 function createInteropFetch(request: any) {
   return (async (input: any, init: any) => {
@@ -20,7 +26,7 @@ function createInteropFetch(request: any) {
 
 async function seededGreppa(request: any, sid: string): Promise<{ greppa: Greppa; store: ServerSession }> {
   const store = new ServerSession()
-  await store.set('default', { sessionId: sid, sig: signSessionId(sid, SECRET), mintedAt: Date.now() })
+  await store.set('default', { sessionId: sid, sig: '', mintedAt: Date.now() })
   const greppa = new Greppa({
     baseUrl: 'http://localhost/api/v1',
     fetch: createInteropFetch(request),
@@ -30,21 +36,25 @@ async function seededGreppa(request: any, sid: string): Promise<{ greppa: Greppa
 }
 
 describe('SDK <-> Server Interop', () => {
+  let request: Awaited<ReturnType<typeof createMockApp>>['request']
+
+  beforeAll(async () => {
+    setEnv()
+    ;({ request } = await createMockApp({
+      routesDir: 'routes',
+      middlewareDir: 'middleware',
+      basePath: '/api/v1',
+    }))
+  })
+
   beforeEach(() => {
     _resetGreppaConfigForTests()
-    process.env.GREPPA_SESSION_SECRET = SECRET
-    process.env.GREPPA_PUBLIC_URL = 'http://localhost'
+    setEnv()
     clearRedisState()
     clearRealtimeState()
   })
 
   test('SDK mints a session and POST /chat persists the user message', async () => {
-    const { request } = await createMockApp({
-      routesDir: 'routes',
-      middlewareDir: 'middleware',
-      basePath: '/api/v1',
-    })
-
     const greppa = new Greppa({
       baseUrl: 'http://localhost/api/v1',
       fetch: createInteropFetch(request),
@@ -62,20 +72,14 @@ describe('SDK <-> Server Interop', () => {
     const history = await greppa.chat.history()
     expect(history.sessionId.length).toBeGreaterThan(0)
     expect(fakeRedis[`session:${history.sessionId}`]).toBeDefined()
-    expect(history.messages.some((m) => m.role === 'user' && m.content === 'hello interop')).toBe(true)
+    expect(history.messages.some((m: { role: string; content: string }) => m.role === 'user' && m.content === 'hello interop')).toBe(true)
   })
 
   test('SDK replays a finished message from the server-side ZSET', async () => {
-    const { request } = await createMockApp({
-      routesDir: 'routes',
-      middlewareDir: 'middleware',
-      basePath: '/api/v1',
-    })
-
     const sid = '01HINTEROP'
     const mid = '01HMSG'
 
-    fakeRedis[`msg:${mid}:meta`] = { sessionId: sid, status: 'done' }
+    fakeRedis[`msg:${mid}:meta`] = { conversationId: sid, status: 'done' }
     seedRealtimeChannel(mid, [
       { event: 'msg.cue',   data: { id: '1', seq: 1, type: 'cue',   data: { status: 'thinking', at: 1 } } },
       { event: 'msg.token', data: { id: '2', seq: 2, type: 'token', data: { token: 'hi' } } },
@@ -95,16 +99,10 @@ describe('SDK <-> Server Interop', () => {
   })
 
   test('SDK resume with last-event-id replays only events after that id', async () => {
-    const { request } = await createMockApp({
-      routesDir: 'routes',
-      middlewareDir: 'middleware',
-      basePath: '/api/v1',
-    })
-
     const sid = '01HRESUME'
     const mid = '01HRESUMEMSG'
 
-    fakeRedis[`msg:${mid}:meta`] = { sessionId: sid, status: 'done' }
+    fakeRedis[`msg:${mid}:meta`] = { conversationId: sid, status: 'done' }
     seedRealtimeChannel(mid, [
       { event: 'msg.token', data: { id: 'e1', seq: 1, type: 'token', data: { token: 'a' } } },
       { event: 'msg.token', data: { id: 'e2', seq: 2, type: 'token', data: { token: 'b' } } },
@@ -141,17 +139,11 @@ describe('SDK <-> Server Interop', () => {
   })
 
   test('SDK resume against a foreign sessionId surfaces an error event', async () => {
-    const { request } = await createMockApp({
-      routesDir: 'routes',
-      middlewareDir: 'middleware',
-      basePath: '/api/v1',
-    })
-
     const ownerSid = '01HOWNER'
     const otherSid = '01HOTHER'
     const mid = '01HFOREIGN'
 
-    fakeRedis[`msg:${mid}:meta`] = { sessionId: ownerSid, status: 'done' }
+    fakeRedis[`msg:${mid}:meta`] = { conversationId: ownerSid, status: 'done' }
     // No need to seed channel events - the route rejects on session mismatch
     // before subscribing.
 

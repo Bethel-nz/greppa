@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { isInjectionAttempt, scanRetrievedSnippet } from '../../lib/security'
+import { isInjectionAttempt, scanRetrievedSnippet } from '~/lib/security'
 
 describe('isInjectionAttempt', () => {
   test('flags ignore previous instructions', () => {

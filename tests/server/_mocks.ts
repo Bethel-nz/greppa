@@ -76,7 +76,7 @@ function makeChannel(name: string) {
       }
       realtimeListeners[name].push(listener)
       return () => {
-        const arr = realtimeListeners[name]
+        const arr = realtimeListeners[name] ?? []
         const idx = arr.indexOf(listener)
         if (idx >= 0) arr.splice(idx, 1)
       }
@@ -96,5 +96,6 @@ mock.module('../../lib/realtime', () => ({
 }))
 mock.module('../../lib/workflow', () => ({
   triggerChatWorkflow: async () => {},
+  triggerIngestWorkflow: async () => {},
   getWorkflowClient: () => ({}),
 }))

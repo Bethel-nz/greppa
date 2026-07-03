@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { signSessionId, verifySessionId } from '../../lib/hmac'
+import { signSessionId, verifySessionId } from '~/lib/hmac'
 
 const SECRET = 'a'.repeat(48)
 

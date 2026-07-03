@@ -1,11 +1,10 @@
 import { describe, expect, test, beforeEach } from 'bun:test'
-import { _resetGreppaConfigForTests } from '../../lib/config'
+import { _resetGreppaConfigForTests } from '~/lib/config'
 
 describe('greppa config', () => {
   beforeEach(() => {
     _resetGreppaConfigForTests()
     delete process.env.GREPPA_SESSION_SECRET
-    delete process.env.GREPPA_DEPLOYER_KEY
     delete process.env.GREPPA_SESSION_TTL_MS
     delete process.env.GREPPA_MESSAGE_TTL_MS
     delete process.env.GREPPA_ALLOW_PUBLIC_DELETE
@@ -25,12 +24,10 @@ describe('greppa config', () => {
     expect(cfg.messageTtlMs).toBe(1000 * 60 * 60)
     expect(cfg.allowPublicDelete).toBe(false)
     expect(cfg.allowPublicStats).toBe(false)
-    expect(cfg.deployerKey).toBeUndefined()
   })
 
   test('parses overrides from env', async () => {
     process.env.GREPPA_SESSION_SECRET = 'b'.repeat(32)
-    process.env.GREPPA_DEPLOYER_KEY = 'deployer'
     process.env.GREPPA_SESSION_TTL_MS = '60000'
     process.env.GREPPA_MESSAGE_TTL_MS = '5000'
     process.env.GREPPA_ALLOW_PUBLIC_DELETE = 'true'
@@ -41,6 +38,5 @@ describe('greppa config', () => {
     expect(cfg.messageTtlMs).toBe(5000)
     expect(cfg.allowPublicDelete).toBe(true)
     expect(cfg.allowPublicStats).toBe(true)
-    expect(cfg.deployerKey).toBe('deployer')
   })
 })
