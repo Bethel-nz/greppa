@@ -1,6 +1,5 @@
 export type GreppaConfig = {
   sessionSecret: string
-  deployerKey: string | undefined
   sessionTtlMs: number
   messageTtlMs: number
   allowPublicDelete: boolean
@@ -37,7 +36,6 @@ export function loadGreppaConfig(): GreppaConfig {
   }
   cached = {
     sessionSecret: secret,
-    deployerKey: process.env.GREPPA_DEPLOYER_KEY || undefined,
     sessionTtlMs: num('GREPPA_SESSION_TTL_MS', 2 * DAY_MS),
     messageTtlMs: num('GREPPA_MESSAGE_TTL_MS', 60 * 60 * 1000),
     allowPublicDelete: bool('GREPPA_ALLOW_PUBLIC_DELETE'),

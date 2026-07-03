@@ -1,28 +1,63 @@
 import type { MiddlewareHandler } from 'hono'
 import { createMiddleware } from '@bethel-nz/sumi/router'
 import type { SumiContext } from '@bethel-nz/sumi/types'
-import { loadGreppaConfig } from '../lib/config'
-import { verifySessionId } from '../lib/hmac'
+import { auth } from '../lib/auth'
+import { getDrizzle } from '../lib/db'
+import { redis } from '../lib/redis'
 
 export const sessionAuth: MiddlewareHandler = async (c, next) => {
-  const cfg = loadGreppaConfig()
-  const deployerHeader = c.req.header('x-greppa-deployer-key')
-  if (cfg.deployerKey && deployerHeader && deployerHeader === cfg.deployerKey) {
-    c.set('sessionId', 'deployer')
-    c.set('isDeployer', true)
+  const conversationId = c.req.header('x-greppa-session')
+  if (!conversationId) {
+    return c.json({ error: 'session headers required' }, 401)
+  }
+
+  c.set('sessionId', conversationId)
+  c.set('conversationId', conversationId)
+
+  // Extract orgId from header if present (for multi-tenant context)
+  const orgId = c.req.header('x-greppa-org-id')
+  c.set('orgId', orgId || null)
+
+  // Try Better Auth session
+  const session = await auth.api.getSession({
+    headers: c.req.raw.headers,
+  })
+
+  if (session?.user && session?.session) {
+    const userId = session.user.id
+    c.set('userId', userId)
+    c.set('authUser', session.user)
+    c.set('authSession', session.session)
+    c.set('isAnonymous', false)
+
+    // Warm cache: fetch org memberships and cache in Redis
+    try {
+      const cacheKey = `user:${userId}:orgs`
+      const cached = await redis.get(cacheKey)
+      if (!cached) {
+        const db = getDrizzle()
+        const memberships = await db.query.memberships.findMany({
+          where: (m, { eq }) => eq(m.userId, userId),
+        })
+        const orgData = memberships.map((m) => ({
+          orgId: m.orgId,
+          role: m.role,
+          groupIds: m.groupIds,
+        }))
+        await redis.set(cacheKey, JSON.stringify(orgData), { ex: 3600 }) // 1 hour TTL
+      }
+    } catch {
+      // cache warm failure is non-blocking
+    }
+
     return next()
   }
 
-  const sid = c.req.header('x-greppa-session')
-  const sig = c.req.header('x-greppa-session-sig')
-  if (!sid || !sig) {
-    return c.json({ error: 'session headers required' }, 401)
-  }
-  if (!verifySessionId(sid, sig, cfg.sessionSecret)) {
-    return c.json({ error: 'invalid session' }, 401)
-  }
-  c.set('sessionId', sid)
-  c.set('isDeployer', false)
+  // Anonymous
+  c.set('userId', null)
+  c.set('authUser', null)
+  c.set('authSession', null)
+  c.set('isAnonymous', true)
   return next()
 }
 

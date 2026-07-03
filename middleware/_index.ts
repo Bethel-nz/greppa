@@ -16,9 +16,9 @@ const corsMw = cors({
   },
   allowHeaders: [
     'content-type',
+    'authorization',
+    'x-api-key',
     'x-greppa-session',
-    'x-greppa-session-sig',
-    'x-greppa-deployer-key',
     'last-event-id',
   ],
   exposeHeaders: ['x-greppa-version', 'retry-after-ms'],

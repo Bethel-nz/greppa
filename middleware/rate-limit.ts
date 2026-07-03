@@ -19,7 +19,6 @@ async function bumpAndCheck(key: string, windowMs: number, limit: number): Promi
 
 export default createMiddleware({
   _: async (c: SumiContext, next) => {
-    if (c.get('isDeployer')) return next()
     const cfg = loadGreppaConfig()
     const ip =
       c.req.header('x-forwarded-for')?.split(',')[0].trim() ||
