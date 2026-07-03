@@ -1,69 +1,103 @@
 import { z } from "zod";
 import { createRoute } from "@bethel-nz/sumi/router";
-import { getWriter, getReader } from "../../lib/memory";
+import { resolver } from "hono-openapi/zod";
+import { getDocumentByFrameId, updateDocument, softDeleteDocument } from "../../lib/knowledge/services/knowledge.service";
 
 const paramSchema = z.object({ frameId: z.string() });
 
-const updateSchema = z.object({
+const articleSchema = z.object({
+  documentId: z.string(),
+  title: z.string(),
+  sourceType: z.string(),
+  sourceUrl: z.string().nullable(),
+  status: z.string(),
+  contentType: z.string().nullable(),
+  fileName: z.string().nullable(),
+  createdAt: z.string().datetime(),
+})
+
+const patchSchema = z.object({
   title: z.string().min(1).optional(),
-  content: z.string().min(1).optional(),
-  tags: z.array(z.string()).optional(),
-});
+  sourceUrl: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+})
 
 export default createRoute({
   get: {
     schema: { param: paramSchema },
-    middleware: ["session-auth", "rate-limit"],
+    middleware: ["user-auth", "rate-limit"],
     handler: async (c) => {
       const { frameId } = c.req.valid("param");
-      const mem = await getReader();
-      const info = await mem.getFrameInfo(Number(frameId));
-      if (!info) return c.json({ error: "Not found" }, 404);
+      const orgId = c.req.query('orgId')
+      if (!orgId) {
+        return c.json({ error: 'orgId query param required' }, 400)
+      }
+
+      const doc = await getDocumentByFrameId(frameId, orgId)
+      if (!doc || doc.status === 'deleted') {
+        return c.json({ error: "Not found" }, 404);
+      }
+
       return c.json({
-        frameId,
-        title: info.title,
-        tags: info.tags ?? [],
-        createdAt: new Date((info.timestamp as number) * 1000).toISOString(),
+        documentId: doc.id,
+        title: doc.title,
+        sourceType: doc.sourceType,
+        sourceUrl: doc.sourceUrl,
+        status: doc.status,
+        contentType: doc.contentType,
+        fileName: doc.fileName,
+        createdAt: doc.createdAt,
       });
     },
     openapi: {
       summary: "Get article metadata",
+      description: "Returns metadata for a specific document by ID.",
       tags: ["knowledge"],
       responses: {
-        200: { description: "Article metadata" },
+        200: {
+          description: "Article metadata",
+          content: { "application/json": { schema: resolver(articleSchema) } },
+        },
+        400: { description: 'orgId query param required' },
+        401: { description: 'Authentication required' },
         404: { description: "Not found" },
+        429: { description: "Rate limit exceeded" },
       },
     },
   },
 
   patch: {
-    schema: { param: paramSchema, json: updateSchema },
-    middleware: ["session-auth", "rate-limit"],
+    schema: { param: paramSchema, json: patchSchema },
+    middleware: ["user-auth", "rate-limit"],
     handler: async (c) => {
       const { frameId } = c.req.valid("param");
-      const updates = c.req.valid("json");
+      const orgId = c.req.query('orgId')
+      if (!orgId) {
+        return c.json({ error: 'orgId query param required' }, 400)
+      }
 
-      const mem = await getWriter();
-      const existing = await mem.getFrameInfo(Number(frameId));
-      if (!existing) return c.json({ error: "Not found" }, 404);
+      const patch = c.req.valid("json");
+      const updated = await updateDocument(frameId, orgId, patch);
 
-      await mem.remove(frameId);
-      const newFrameId = await mem.put({
-        title: updates.title ?? existing.title,
-        label: "knowledge",
-        text: updates.content,
-        tags: updates.tags ?? existing.tags ?? [],
+      if (!updated) {
+        return c.json({ error: "Not found" }, 404);
+      }
+
+      return c.json({
+        documentId: updated.id,
+        title: updated.title,
+        status: updated.status,
+        message: "Article updated",
       });
-      await mem.seal();
-
-      return c.json({ frameId: String(newFrameId), message: "Article updated" });
     },
     openapi: {
       summary: "Update an article",
-      description: "Replaces the article content. All fields are optional — omit to keep existing value.",
+      description: "Updates document metadata (title, sourceUrl, metadata). Does not mutate Memvid frames in V1.",
       tags: ["knowledge"],
       responses: {
         200: { description: "Updated" },
+        400: { description: 'orgId query param required' },
+        401: { description: 'Authentication required' },
         404: { description: "Not found" },
         429: { description: "Rate limit exceeded" },
       },
@@ -72,27 +106,31 @@ export default createRoute({
 
   delete: {
     schema: { param: paramSchema },
-    middleware: ["session-auth", "rate-limit"],
+    middleware: ["user-auth", "rate-limit"],
     handler: async (c) => {
-      const { loadGreppaConfig } = await import('../../lib/config')
-      const cfg = loadGreppaConfig()
-      if (!cfg.allowPublicDelete && !c.get('isDeployer')) {
-        return c.json({ error: 'deployer key required' }, 403)
-      }
       const { frameId } = c.req.valid("param");
-      const mem = await getWriter();
-      const existing = await mem.getFrameInfo(Number(frameId));
-      if (!existing) return c.json({ error: "Not found" }, 404);
-      await mem.remove(frameId);
-      await mem.seal();
+      const orgId = c.req.query('orgId')
+      if (!orgId) {
+        return c.json({ error: 'orgId query param required' }, 400)
+      }
+
+      const deleted = await softDeleteDocument(frameId, orgId);
+      if (!deleted) {
+        return c.json({ error: "Not found" }, 404);
+      }
+
       return c.json({ message: "Article deleted" });
     },
     openapi: {
       summary: "Delete an article",
+      description: "Soft-deletes a document from the org's knowledge base.",
       tags: ["knowledge"],
       responses: {
         200: { description: "Deleted" },
+        400: { description: 'orgId query param required' },
+        401: { description: 'Authentication required' },
         404: { description: "Not found" },
+        429: { description: "Rate limit exceeded" },
       },
     },
   },

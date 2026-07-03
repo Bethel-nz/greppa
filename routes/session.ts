@@ -1,14 +1,17 @@
 import { z } from 'zod'
 import { createRoute } from '@bethel-nz/sumi/router'
 import { ulid } from 'ulid'
-import { signSessionId } from '../lib/hmac'
+import { resolver } from 'hono-openapi/zod'
 import { loadGreppaConfig } from '../lib/config'
 import { redis } from '../lib/redis'
 
-const responseSchema = z.object({
+const postResponseSchema = z.object({
   sessionId: z.string(),
-  sig: z.string(),
   ttlMs: z.number(),
+})
+
+const deleteResponseSchema = z.object({
+  deleted: z.boolean(),
 })
 
 export default createRoute({
@@ -16,7 +19,6 @@ export default createRoute({
     handler: async (c) => {
       const cfg = loadGreppaConfig()
       const sessionId = ulid()
-      const sig = signSessionId(sessionId, cfg.sessionSecret)
       const ttlS = Math.floor(cfg.sessionTtlMs / 1000)
       try {
         await redis.set(
@@ -27,33 +29,40 @@ export default createRoute({
       } catch {
         // redis-down case: still issue the session; verification will fail later if needed.
       }
-      return c.json({ sessionId, sig, ttlMs: cfg.sessionTtlMs })
+      return c.json({ sessionId, ttlMs: cfg.sessionTtlMs })
     },
     openapi: {
-      summary: 'Mint a new session',
+      summary: 'Mint a new conversation session',
+      description: 'Creates a new anonymous conversation session. Returns a sessionId to use in x-greppa-session header.',
       tags: ['session'],
       responses: {
-        200: { description: 'Session created' },
+        200: {
+          description: 'Session created',
+          content: { 'application/json': { schema: resolver(postResponseSchema) } },
+        },
       },
     },
   },
   delete: {
     middleware: ['session-auth'],
     handler: async (c) => {
-      const sid = c.get('sessionId')
-      if (sid && sid !== 'deployer') {
-        await Promise.all([
-          redis.del(`session:${sid}`),
-          redis.del(`history:${sid}`),
-        ])
-      }
+      const conversationId = c.get('conversationId')
+      await Promise.all([
+        redis.del(`session:${conversationId}`),
+        redis.del(`history:${conversationId}`),
+      ])
       return c.json({ deleted: true })
     },
     openapi: {
-      summary: 'Revoke the current session',
+      summary: 'Revoke the current session conversation',
+      description: 'Deletes the session and all associated conversation history from Redis.',
       tags: ['session'],
       responses: {
-        200: { description: 'Session deleted' },
+        200: {
+          description: 'Session deleted',
+          content: { 'application/json': { schema: resolver(deleteResponseSchema) } },
+        },
+        401: { description: 'Session header required' },
       },
     },
   },

@@ -1,9 +1,7 @@
 import { z } from "zod";
 import { createRoute } from "@bethel-nz/sumi/router";
 import { resolver } from "hono-openapi/zod";
-import { getWriter, getReader } from "../lib/memory";
-
-const TMP_DIR = `${import.meta.dir}/../.tmp`;
+import { addMemory, getOrgDocumentTimeline, getOrgStats } from "../lib/memory/service";
 
 const jsonBodySchema = z.object({
   title: z.string().min(1).describe("Title of the article or document"),
@@ -13,40 +11,74 @@ const jsonBodySchema = z.object({
     .optional()
     .default([])
     .describe("Optional tags for retrieval"),
+  orgId: z.string().min(1).describe("Organization ID"),
 });
 
-const responseSchema = z.object({
-  frameId: z.string(),
+const articleSchema = z.object({
+  documentId: z.string(),
   title: z.string(),
-  wordCount: z.number().nullable(),
+  sourceType: z.string(),
+  tags: z.array(z.string()),
+  createdAt: z.string().datetime(),
+});
+
+const statsSchema = z.object({
+  orgId: z.string(),
+  documents: z.number(),
+  events: z.record(z.string(), z.number()),
+});
+
+const listResponseSchema = z.object({
+  orgId: z.string(),
+  articles: z.array(articleSchema),
+  total: z.number(),
+  stats: statsSchema,
+});
+
+const ingestResponseSchema = z.object({
+  documentId: z.string(),
+  title: z.string(),
+  status: z.string(),
   message: z.string(),
 });
 
 export default createRoute({
   get: {
-    middleware: ["session-auth", "rate-limit"],
+    middleware: ["user-auth", "rate-limit"],
     handler: async (c) => {
-      const mem = await getReader();
-      const tl = await mem.timeline({ limit: 100 });
-      const entries = await Promise.all(
-        Object.values(tl).map(async (e: any) => {
-          const info = await mem.getFrameInfo(e.frame_id);
-          return {
-            frameId: String(e.frame_id),
-            title: info.title,
-            preview: e.preview,
-            tags: info.tags ?? [],
-            createdAt: new Date(e.timestamp * 1000).toISOString(),
-          };
-        }),
-      );
-      return c.json({ articles: entries, total: entries.length });
+      const orgId = c.req.query('orgId')
+      if (!orgId) {
+        return c.json({ error: 'orgId query param required' }, 400)
+      }
+
+      const docs = await getOrgDocumentTimeline(orgId, 100)
+      const stats = await getOrgStats(orgId)
+
+      return c.json({
+        orgId,
+        articles: docs.map((d) => ({
+          documentId: d.id,
+          title: d.title,
+          sourceType: d.sourceType,
+          tags: (d.metadata as any)?.tags ?? [],
+          createdAt: d.createdAt,
+        })),
+        total: docs.length,
+        stats,
+      });
     },
     openapi: {
       summary: "List all ingested articles",
+      description: "Returns all documents for an organization with aggregated stats.",
       tags: ["knowledge"],
       responses: {
-        200: { description: "List of articles" },
+        200: {
+          description: "List of articles with stats",
+          content: { "application/json": { schema: resolver(listResponseSchema) } },
+        },
+        400: { description: 'orgId query param required' },
+        401: { description: 'Authentication required' },
+        429: { description: "Rate limit exceeded" },
       },
     },
   },
@@ -54,90 +86,38 @@ export default createRoute({
   // JSON path — plain text articles
   post: {
     schema: { json: jsonBodySchema },
-    middleware: ["session-auth", "rate-limit"],
+    middleware: ["user-auth", "rate-limit"],
     handler: async (c) => {
-      const { title, content, tags } = c.req.valid("json");
-      const wordCount = content.trim().split(/\s+/).filter(Boolean).length;
-      const mem = await getWriter();
-      const frameId = await mem.put({
+      const { title, content, tags, orgId } = c.req.valid("json");
+      const userId = c.get('userId')
+      if (!userId) {
+        return c.json({ error: 'authentication required' }, 401)
+      }
+
+      const result = await addMemory({
+        userId,
+        orgId,
         title,
-        label: "knowledge",
         text: content,
-        tags,
+        sourceType: 'document',
       });
-      await mem.seal();
+
       return c.json(
-        { frameId, title, wordCount, message: "Article stored" },
+        { documentId: result.documentId, title, status: result.status, message: "Article stored" },
         201,
       );
     },
     openapi: {
       summary: "Ingest a text article",
-      description: "Store plain text. Available as context in /chat.",
+      description: "Stores plain text in the org's knowledge base. For file uploads, use POST /knowledge/presign + POST /knowledge/ingest instead.",
       tags: ["knowledge"],
       responses: {
         201: {
-          description: "Stored",
-          content: { "application/json": { schema: resolver(responseSchema) } },
+          description: "Article stored",
+          content: { "application/json": { schema: resolver(ingestResponseSchema) } },
         },
-        429: { description: "Rate limit exceeded" },
-      },
-    },
-  },
-
-  // File upload path — PDF, DOCX, etc.
-  put: {
-    middleware: ["session-auth", "rate-limit"],
-    handler: async (c) => {
-      const body = await c.req.parseBody();
-      const file = body["file"];
-      const title = body["title"];
-
-      if (!(file instanceof File))
-        return c.json({ error: "Missing file field" }, 400);
-      if (typeof title !== "string" || !title.trim())
-        return c.json({ error: "Missing title field" }, 400);
-
-      const tags =
-        typeof body["tags"] === "string"
-          ? body["tags"]
-              .split(",")
-              .map((t: string) => t.trim())
-              .filter(Boolean)
-          : [];
-
-      const ext = file.name.split(".").pop() ?? "bin";
-      const tmpPath = `${TMP_DIR}/greppa-${crypto.randomUUID()}.${ext}`;
-      await Bun.write(tmpPath, file);
-
-      try {
-        const mem = await getWriter();
-        const frameId = await mem.put({
-          title,
-          label: "knowledge",
-          file: tmpPath,
-          tags,
-        });
-        await mem.seal();
-        return c.json(
-          { frameId, title, wordCount: null, message: "File stored" },
-          201,
-        );
-      } finally {
-        await Bun.file(tmpPath).delete().catch(() => {});
-      }
-    },
-    openapi: {
-      summary: "Ingest a document file",
-      description:
-        "Upload a PDF, DOCX, or other supported file as multipart/form-data. Fields: file (required), title (required), tags (optional, comma-separated).",
-      tags: ["knowledge"],
-      responses: {
-        201: {
-          description: "Stored",
-          content: { "application/json": { schema: resolver(responseSchema) } },
-        },
-        400: { description: "Missing file or title" },
+        400: { description: "Invalid request body" },
+        401: { description: 'Authentication required' },
         429: { description: "Rate limit exceeded" },
       },
     },
