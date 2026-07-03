@@ -1,0 +1,6 @@
+export { Checkpoint } from './checkpoint'
+export type { CheckpointConfig } from './checkpoint'
+export { getCheckpoint } from './client'
+export { MemoryStorage } from './storage'
+export type { StorageBackend, ObjectMeta } from './storage'
+export { NotFoundError, ConflictError } from './errors'
