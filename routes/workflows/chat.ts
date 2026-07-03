@@ -41,7 +41,7 @@ const workflowHandler = serve(async (workflow) => {
   }
 
   const cfg = loadGreppaConfig()
-  const emit = makeEmitter({ messageId })
+  const emit = makeEmitter({ messageId, ttlMs: cfg.resumeWindowMs })
   // Memory is per-user, so userId alone unlocks the tools. The org catalog is a
   // separate, optional enrichment that still requires orgId.
   const isAuthenticated = !!userId
