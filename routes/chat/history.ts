@@ -1,8 +1,28 @@
 import { z } from 'zod'
 import { createRoute } from '@bethel-nz/sumi/router'
-import { redis } from '../../lib/redis'
+import { resolver } from 'hono-openapi/zod'
+import { redis } from '~/lib/redis'
 
-const querySchema = z.object({ sessionId: z.string().min(1) })
+const querySchema = z.object({
+  sessionId: z.string().min(1).describe('Conversation session ID to fetch history for'),
+})
+
+const messageSchema = z.object({
+  id: z.string(),
+  role: z.enum(['user', 'assistant']),
+  content: z.string(),
+  at: z.number(),
+})
+
+const historyResponseSchema = z.object({
+  sessionId: z.string(),
+  messages: z.array(messageSchema),
+  lastActivityAt: z.number(),
+})
+
+const deleteResponseSchema = z.object({
+  deleted: z.boolean(),
+})
 
 export default createRoute({
   get: {
@@ -10,9 +30,8 @@ export default createRoute({
     middleware: ['session-auth'],
     handler: async (c) => {
       const { sessionId } = c.req.valid('query')
-      const ctxSid = c.get('sessionId')
-      const isDeployer = c.get('isDeployer')
-      if (sessionId !== ctxSid && !isDeployer) {
+      const conversationId = c.get('conversationId')
+      if (sessionId !== conversationId) {
         return c.json({ error: 'forbidden' }, 403)
       }
 
@@ -24,23 +43,37 @@ export default createRoute({
       return c.json({ sessionId, messages, lastActivityAt })
     },
     openapi: {
-      summary: 'Load conversation history for a session',
+      summary: 'Load conversation history',
+      description: 'Returns all messages in a conversation, ordered chronologically.',
       tags: ['chat'],
-      responses: { 200: { description: 'History payload' } },
+      responses: {
+        200: {
+          description: 'Conversation history',
+          content: { 'application/json': { schema: resolver(historyResponseSchema) } },
+        },
+        401: { description: 'Session header required' },
+        403: { description: 'Session ID mismatch' },
+      },
     },
   },
   delete: {
     middleware: ['session-auth'],
     handler: async (c) => {
-      const sid = c.get('sessionId')
-      if (sid === 'deployer') return c.json({ error: 'pass real sessionId' }, 400)
-      await redis.del(`history:${sid}`)
+      const conversationId = c.get('conversationId')
+      await redis.del(`history:${conversationId}`)
       return c.json({ deleted: true })
     },
     openapi: {
-      summary: 'Wipe the current session conversation',
+      summary: 'Wipe conversation history',
+      description: 'Permanently deletes all messages for the current conversation.',
       tags: ['chat'],
-      responses: { 200: { description: 'Wiped' } },
+      responses: {
+        200: {
+          description: 'History wiped',
+          content: { 'application/json': { schema: resolver(deleteResponseSchema) } },
+        },
+        401: { description: 'Session header required' },
+      },
     },
   },
 })

@@ -13,15 +13,36 @@ export function getWorkflowClient(): Client {
 }
 
 export async function triggerChatWorkflow(payload: {
-  sessionId: string
+  conversationId: string
   messageId: string
   message: string
   model: string
+  context?: { selection?: string; source?: string; title?: string; surrounding?: string }
+  userId?: string | null
+  orgId?: string | null
 }): Promise<void> {
   const base = process.env.GREPPA_PUBLIC_URL
   if (!base) throw new Error('GREPPA_PUBLIC_URL is required (full URL of this server)')
   await getWorkflowClient().trigger({
     url: `${base.replace(/\/$/, '')}/api/v1/workflows/chat`,
+    body: payload,
+  })
+}
+
+export async function triggerIngestWorkflow(payload: {
+  jobId: string
+  orgId: string
+  userId: string
+  documentId: string
+  r2Key: string
+  contentType: string
+  fileName: string
+  title: string
+}): Promise<void> {
+  const base = process.env.GREPPA_PUBLIC_URL
+  if (!base) throw new Error('GREPPA_PUBLIC_URL is required (full URL of this server)')
+  await getWorkflowClient().trigger({
+    url: `${base.replace(/\/$/, '')}/api/v1/workflows/ingest`,
     body: payload,
   })
 }

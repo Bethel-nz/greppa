@@ -1,11 +1,11 @@
 import { z } from 'zod'
 import { createRoute } from '@bethel-nz/sumi/router'
 import { ulid } from 'ulid'
-import { redis } from '../../lib/redis'
-import { realtime } from '../../lib/realtime'
+import { redis } from '~/lib/redis'
+import { realtime } from '~/lib/realtime'
 
 const querySchema = z.object({
-  messageId: z.string().min(1),
+  messageId: z.string().min(1).describe('The message ID to stream responses for'),
 })
 
 type StoredEvent = {
@@ -30,14 +30,13 @@ export default createRoute({
         return
       }
       const lastEventId = c.req.header('last-event-id')
-      const sessionId = c.get('sessionId')
-      const isDeployer = c.get('isDeployer')
+      const conversationId = c.get('conversationId')
 
       const meta = (await redis.hgetall(`msg:${messageId}:meta`)) as
-        | { sessionId?: string; status?: string }
+        | { conversationId?: string; status?: string }
         | null
 
-      if (!meta || (meta.sessionId !== sessionId && !isDeployer)) {
+      if (!meta || meta.conversationId !== conversationId) {
         await stream.writeSSE({
           event: 'error',
           data: JSON.stringify({ code: 'not_found', reason: 'unknown message' }),
@@ -78,10 +77,12 @@ export default createRoute({
       }
     },
     openapi: {
-      summary: 'Subscribe to a chat message stream (replay-then-tail SSE)',
+      summary: 'Subscribe to a chat message stream',
+      description: 'Server-Sent Events stream. Replays history from last-event-id header, then tails new events. Events: cue, sources, token, done, error.',
       tags: ['chat'],
       responses: {
-        200: { description: 'SSE stream' },
+        200: { description: 'SSE stream (text/event-stream)' },
+        401: { description: 'Session header required' },
       },
     },
   },
