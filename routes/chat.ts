@@ -57,7 +57,7 @@ export default createRoute({
         startedAt: now,
         model,
       })
-      await redis.expire(`msg:${messageId}:meta`, Math.floor(cfg.messageTtlMs / 1000))
+      await redis.expire(`msg:${messageId}:meta`, Math.floor(cfg.resumeWindowMs / 1000))
 
       await triggerChatWorkflow({
         conversationId,

@@ -1,4 +1,4 @@
-import { ulid } from 'ulid'
+import { redis } from './redis'
 import { realtime } from './realtime'
 import type { EmitEvent } from './realtime'
 
@@ -11,12 +11,24 @@ export type StoredEvent = {
   data: unknown
 }
 
-export function makeEmitter({ messageId }: { messageId: string }) {
+// Durable ZSET write before the live Realtime emit, so a resume can always replay.
+// The event id is the monotonic seq; the log TTL re-anchors on every write.
+export function makeEmitter({ messageId, ttlMs }: { messageId: string; ttlMs: number }) {
   const channel = realtime.channel(messageId)
+  const eventsKey = `msg:${messageId}:events`
+  const ttlSecs = Math.floor(ttlMs / 1000)
   let seq = 0
+
   return async function emit(type: EmitType, data: unknown): Promise<StoredEvent> {
     seq += 1
-    const event: StoredEvent = { id: ulid(), seq, type, data }
+    const event: StoredEvent = { id: String(seq), seq, type, data }
+
+    await redis
+      .pipeline()
+      .zadd(eventsKey, { score: seq, member: JSON.stringify(event) })
+      .expire(eventsKey, ttlSecs)
+      .exec()
+
     await channel.emit(`msg.${type}` as EmitEvent, event as any)
     return event
   }

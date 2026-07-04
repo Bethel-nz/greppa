@@ -1,7 +1,7 @@
 export type GreppaConfig = {
   sessionSecret: string
   sessionTtlMs: number
-  messageTtlMs: number
+  resumeWindowMs: number
   allowPublicDelete: boolean
   allowPublicStats: boolean
   protocolVersion: string
@@ -37,7 +37,7 @@ export function loadGreppaConfig(): GreppaConfig {
   cached = {
     sessionSecret: secret,
     sessionTtlMs: num('GREPPA_SESSION_TTL_MS', 2 * DAY_MS),
-    messageTtlMs: num('GREPPA_MESSAGE_TTL_MS', 60 * 60 * 1000),
+    resumeWindowMs: num('GREPPA_RESUME_WINDOW_MS', 5 * 60 * 1000),
     allowPublicDelete: bool('GREPPA_ALLOW_PUBLIC_DELETE'),
     allowPublicStats: bool('GREPPA_ALLOW_PUBLIC_STATS'),
     protocolVersion: process.env.GREPPA_PROTOCOL_VERSION || '1',

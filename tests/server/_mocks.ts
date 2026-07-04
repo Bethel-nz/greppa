@@ -32,11 +32,28 @@ export const redisMock = {
   },
   hgetall: async (key: string) => fakeRedis[key] ?? null,
   get: async (k: string) => fakeRedis[k] ?? null,
-  set: async (k: string, v: any) => { fakeRedis[k] = v; return 'OK' },
+  set: async (k: string, v: any, opts?: { nx?: boolean; ex?: number }) => {
+    if (opts?.nx && fakeRedis[k] !== undefined) return null
+    fakeRedis[k] = v
+    return 'OK'
+  },
   del: async (k: string) => { delete fakeRedis[k]; delete zsets[k]; return 1 },
   expire: async () => 1,
   pexpire: async () => 1,
   incr: async (k: string) => { fakeRedis[k] = (Number(fakeRedis[k]) || 0) + 1; return fakeRedis[k] },
+  pipeline: () => {
+    const ops: Array<[string, any[]]> = []
+    const api: any = {
+      zadd: (...a: any[]) => { ops.push(['zadd', a]); return api },
+      expire: (...a: any[]) => { ops.push(['expire', a]); return api },
+      exec: async () => {
+        const out = []
+        for (const [m, a] of ops) out.push(await (redisMock as any)[m](...a))
+        return out
+      },
+    }
+    return api
+  },
 }
 
 type ChannelEvent = { event: string; data: unknown }

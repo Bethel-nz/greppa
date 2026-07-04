@@ -25,7 +25,8 @@ function buildRealtime() {
   return new Realtime({
     schema: realtimeSchema,
     redis,
-    history: { expireAfterSecs: 60 * 60 },
+    // Live-tail transport only; durable replay is the msg:<id>:events ZSET.
+    history: { expireAfterSecs: 60 },
   })
 }
 

@@ -8,6 +8,7 @@ import { isInjectionAttempt } from '~/lib/security'
 import { loadGreppaConfig } from '~/lib/config'
 import { getOrgDocumentTimeline } from '~/lib/memory/service'
 import { buildTools, type ChatSource } from '~/lib/chat/tools'
+import { beginRun, setMeta } from '~/lib/chat/lifecycle'
 
 const SYSTEM_PROMPT = `You are Greppa, a personal knowledge assistant. Your sole purpose is to help users explore and understand the articles and documents stored in their memory.
 
@@ -41,10 +42,14 @@ const workflowHandler = serve(async (workflow) => {
   }
 
   const cfg = loadGreppaConfig()
-  const emit = makeEmitter({ messageId })
+  const emit = makeEmitter({ messageId, ttlMs: cfg.resumeWindowMs })
   // Memory is per-user, so userId alone unlocks the tools. The org catalog is a
   // separate, optional enrichment that still requires orgId.
   const isAuthenticated = !!userId
+
+  // Skip a redelivered terminal run; a fresh attempt resets its log.
+  const { skip } = await beginRun({ messageId, ttlMs: cfg.resumeWindowMs })
+  if (skip) return
 
   await emit('cue', { status: 'scanning_input', at: Date.now() })
 
@@ -53,7 +58,7 @@ const workflowHandler = serve(async (workflow) => {
       code: 'injection_blocked',
       reason: 'I can only help with questions about your stored knowledge.',
     })
-    await redis.hset(`msg:${messageId}:meta`, { status: 'error', finishedAt: Date.now() })
+    await setMeta({ messageId, ttlMs: cfg.resumeWindowMs, fields: { status: 'error', finishedAt: Date.now() } })
     return
   }
 
@@ -123,7 +128,7 @@ ${context.surrounding ? `Surrounding text: ...${context.surrounding}...` : ''}
   } catch (err) {
     console.error('[chat] generation failed:', err)
     await emit('error', { code: 'generation_failed', reason: 'Something went wrong generating a response.' })
-    await redis.hset(`msg:${messageId}:meta`, { status: 'error', finishedAt: Date.now() })
+    await setMeta({ messageId, ttlMs: cfg.resumeWindowMs, fields: { status: 'error', finishedAt: Date.now() } })
     return
   }
 
@@ -141,7 +146,9 @@ ${context.surrounding ? `Surrounding text: ...${context.surrounding}...` : ''}
   await redis.zadd(`history:${conversationId}`, { score: finalMsg.at, member: JSON.stringify(finalMsg) })
   await redis.expire(`history:${conversationId}`, Math.floor(cfg.sessionTtlMs / 1000))
 
-  await redis.hset(`msg:${messageId}:meta`, { status: 'done', finishedAt })
+  // Emit the terminal frame to the durable log before flipping meta to done, so a
+  // terminal meta always implies a terminal event exists to replay (matches the
+  // error paths, which also emit before setMeta).
   await emit('done', {
     messageId,
     message: content,
@@ -150,6 +157,7 @@ ${context.surrounding ? `Surrounding text: ...${context.surrounding}...` : ''}
     model,
     at: finishedAt,
   })
+  await setMeta({ messageId, ttlMs: cfg.resumeWindowMs, fields: { status: 'done', finishedAt } })
 })
 
 export default createRoute({

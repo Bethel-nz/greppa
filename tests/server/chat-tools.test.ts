@@ -1,16 +1,9 @@
+import './_mocks'
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { clearRedisState } from './_mocks'
 
-// Redis mock that honours SET ... NX (the agent's `remember` dedup depends on it,
-// and the shared _mocks redis ignores nx). Keyed store reset between tests.
-const store = new Map<string, string>()
-const redisMock = {
-  set: async (key: string, value: string, opts?: { nx?: boolean }) => {
-    if (opts?.nx && store.has(key)) return null
-    store.set(key, value)
-    return 'OK'
-  },
-}
-mock.module('../../lib/redis', () => ({ redis: redisMock, getRedis: () => redisMock }))
+// Use the shared _mocks redis (its `set` honours NX). A per-file redis mock would
+// clobber the shared one process-wide via mock.module and break other test files.
 
 // Spy on the memory service so we assert the tool's effects, not Memvid behaviour.
 const calls = { add: [] as any[], ask: [] as any[] }
@@ -42,7 +35,7 @@ function makeHarness() {
 }
 
 beforeEach(() => {
-  store.clear()
+  clearRedisState()
   calls.add.length = 0
   calls.ask.length = 0
   askResult = { answer: null, sources: [], context: '', grounding: null }
