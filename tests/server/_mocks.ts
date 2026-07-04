@@ -32,7 +32,11 @@ export const redisMock = {
   },
   hgetall: async (key: string) => fakeRedis[key] ?? null,
   get: async (k: string) => fakeRedis[k] ?? null,
-  set: async (k: string, v: any) => { fakeRedis[k] = v; return 'OK' },
+  set: async (k: string, v: any, opts?: { nx?: boolean; ex?: number }) => {
+    if (opts?.nx && fakeRedis[k] !== undefined) return null
+    fakeRedis[k] = v
+    return 'OK'
+  },
   del: async (k: string) => { delete fakeRedis[k]; delete zsets[k]; return 1 },
   expire: async () => 1,
   pexpire: async () => 1,

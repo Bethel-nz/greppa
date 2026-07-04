@@ -91,6 +91,12 @@ export default createRoute({
         }
         if (terminated) return
 
+        // A finished message has no live producer; never enter the unbounded
+        // tail loop for one. The snapshot already replayed its terminal event
+        // in the normal case; this guards the pathological "meta terminal but
+        // log has no terminal frame" case against a full-window hang.
+        if (meta.status && TERMINAL.has(meta.status)) return
+
         // Tail live events. Close on a terminal event, or on a stalled stream: if no
         // new event arrives within the resume window the workflow died without a
         // terminal frame (QStash retries exhausted), so stop rather than hang.

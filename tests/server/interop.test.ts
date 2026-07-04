@@ -1,6 +1,6 @@
 import './_mocks'
 import { describe, expect, test, beforeAll, beforeEach } from 'bun:test'
-import { fakeRedis, clearRedisState, clearRealtimeState, seedRealtimeChannel } from './_mocks'
+import { fakeRedis, zsets, clearRedisState, clearRealtimeState } from './_mocks'
 import { Greppa, ServerSession } from '../../packages/greppa-sdk/src/index'
 import { _resetGreppaConfigForTests } from '~/lib/config'
 
@@ -80,11 +80,11 @@ describe('SDK <-> Server Interop', () => {
     const mid = '01HMSG'
 
     fakeRedis[`msg:${mid}:meta`] = { conversationId: sid, status: 'done' }
-    seedRealtimeChannel(mid, [
-      { event: 'msg.cue',   data: { id: '1', seq: 1, type: 'cue',   data: { status: 'thinking', at: 1 } } },
-      { event: 'msg.token', data: { id: '2', seq: 2, type: 'token', data: { token: 'hi' } } },
-      { event: 'msg.done',  data: { id: '3', seq: 3, type: 'done',  data: { messageId: mid, message: 'hi', model: 'm', at: 2 } } },
-    ])
+    zsets[`msg:${mid}:events`] = [
+      { score: 1, member: JSON.stringify({ id: '1', seq: 1, type: 'cue',   data: { status: 'thinking', at: 1 } }) },
+      { score: 2, member: JSON.stringify({ id: '2', seq: 2, type: 'token', data: { token: 'hi' } }) },
+      { score: 3, member: JSON.stringify({ id: '3', seq: 3, type: 'done',  data: { messageId: mid, message: 'hi', model: 'm', at: 2 } }) },
+    ]
 
     const { greppa } = await seededGreppa(request, sid)
 
@@ -103,12 +103,12 @@ describe('SDK <-> Server Interop', () => {
     const mid = '01HRESUMEMSG'
 
     fakeRedis[`msg:${mid}:meta`] = { conversationId: sid, status: 'done' }
-    seedRealtimeChannel(mid, [
-      { event: 'msg.token', data: { id: 'e1', seq: 1, type: 'token', data: { token: 'a' } } },
-      { event: 'msg.token', data: { id: 'e2', seq: 2, type: 'token', data: { token: 'b' } } },
-      { event: 'msg.token', data: { id: 'e3', seq: 3, type: 'token', data: { token: 'c' } } },
-      { event: 'msg.done',  data: { id: 'e4', seq: 4, type: 'done',  data: { messageId: mid, message: 'abc', model: 'm', at: 4 } } },
-    ])
+    zsets[`msg:${mid}:events`] = [
+      { score: 1, member: JSON.stringify({ id: '1', seq: 1, type: 'token', data: { token: 'a' } }) },
+      { score: 2, member: JSON.stringify({ id: '2', seq: 2, type: 'token', data: { token: 'b' } }) },
+      { score: 3, member: JSON.stringify({ id: '3', seq: 3, type: 'token', data: { token: 'c' } }) },
+      { score: 4, member: JSON.stringify({ id: '4', seq: 4, type: 'done',  data: { messageId: mid, message: 'abc', model: 'm', at: 4 } }) },
+    ]
 
     const { greppa } = await seededGreppa(request, sid)
     const baseFetch = (greppa as any).chat.fetchImpl as typeof fetch
@@ -119,7 +119,7 @@ describe('SDK <-> Server Interop', () => {
       const url = typeof input === 'string' ? input : (input as URL).toString()
       if (url.includes('/chat/stream')) {
         const headers = new Headers(init?.headers)
-        headers.set('last-event-id', 'e2')
+        headers.set('last-event-id', '2')
         return baseFetch(input as any, { ...(init ?? {}), headers })
       }
       return baseFetch(input as any, init)
