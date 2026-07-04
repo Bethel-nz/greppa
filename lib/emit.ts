@@ -11,12 +11,8 @@ export type StoredEvent = {
   data: unknown
 }
 
-// Each event is durable-before-live: the ZSET write (authoritative replay source)
-// happens before the Realtime emit (live transport). If the Realtime emit fails,
-// live subscribers miss a frame but every resume replays it from the log. The event
-// `id` is the monotonic `seq` rendered as a string, so resumption never depends on
-// sub-millisecond ULID ordering. The log TTL is re-anchored on every write so it
-// expires `ttlMs` after the last event, not the first.
+// Durable ZSET write before the live Realtime emit, so a resume can always replay.
+// The event id is the monotonic seq; the log TTL re-anchors on every write.
 export function makeEmitter({ messageId, ttlMs }: { messageId: string; ttlMs: number }) {
   const channel = realtime.channel(messageId)
   const eventsKey = `msg:${messageId}:events`

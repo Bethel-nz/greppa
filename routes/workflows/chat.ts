@@ -47,8 +47,7 @@ const workflowHandler = serve(async (workflow) => {
   // separate, optional enrichment that still requires orgId.
   const isAuthenticated = !!userId
 
-  // Guard against QStash redelivery: a message that already reached a terminal
-  // status is a duplicate run and must no-op. A fresh attempt resets its event log.
+  // Skip a redelivered terminal run; a fresh attempt resets its log.
   const { skip } = await beginRun({ messageId, ttlMs: cfg.resumeWindowMs })
   if (skip) return
 

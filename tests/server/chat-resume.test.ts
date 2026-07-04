@@ -30,8 +30,7 @@ beforeEach(() => {
   clearRealtimeState()
 })
 
-// Seed a durable log. Each event carries a unique token letter so we can assert
-// which events were replayed.
+// Seed a durable log; unique token letters let us assert which events replayed.
 function seedLog(sid: string, messageId: string, includeDone = true) {
   fakeRedis[`msg:${messageId}:meta`] = { conversationId: sid, status: includeDone ? 'done' : 'generating' }
   const events = [

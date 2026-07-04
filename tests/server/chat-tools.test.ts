@@ -2,9 +2,8 @@ import './_mocks'
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import { clearRedisState } from './_mocks'
 
-// Redis comes from the shared _mocks harness, whose `set` honours NX (the
-// `remember` dedup depends on it). A per-file redis mock would clobber the
-// shared one process-wide via Bun's mock.module registry and break other files.
+// Use the shared _mocks redis (its `set` honours NX). A per-file redis mock would
+// clobber the shared one process-wide via mock.module and break other test files.
 
 // Spy on the memory service so we assert the tool's effects, not Memvid behaviour.
 const calls = { add: [] as any[], ask: [] as any[] }

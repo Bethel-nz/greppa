@@ -25,9 +25,7 @@ function buildRealtime() {
   return new Realtime({
     schema: realtimeSchema,
     redis,
-    // Realtime is the live-tail transport only; durable replay comes from the
-    // msg:<id>:events ZSET, and the stream handler subscribes with history: false.
-    // A minimal buffer is enough, so events are not stored twice for the full window.
+    // Live-tail transport only; durable replay is the msg:<id>:events ZSET.
     history: { expireAfterSecs: 60 },
   })
 }

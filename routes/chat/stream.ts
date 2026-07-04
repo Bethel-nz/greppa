@@ -35,9 +35,7 @@ export default createRoute({
         | { conversationId?: string; status?: string }
         | null
 
-      // One signal for expired / unknown / cross-conversation. Distinguishing them
-      // would turn the endpoint into an existence oracle. The client falls back to the
-      // conversation history load on not_found.
+      // Same not_found for expired/unknown/cross-conversation, so it is not an existence oracle.
       if (!meta || meta.conversationId !== conversationId) {
         await stream.writeSSE({ event: 'error', data: JSON.stringify({ code: 'not_found', reason: 'unknown message' }) })
         return
@@ -71,12 +69,11 @@ export default createRoute({
       })
 
       try {
-        // Snapshot the durable log (bounded to one message; a full read is fine).
         const rawLog = (await redis.zrange(eventsKey, 0, -1)) as string[]
         const log: StoredEvent[] = rawLog.map((m) => JSON.parse(m) as StoredEvent)
         const maxSeq = log.length ? log[log.length - 1].seq : 0
 
-        // Unparseable (legacy ULID) or stale (log reset by a retry) cursor -> full replay.
+        // Unparseable or stale cursor -> full replay.
         const effectiveCursor = Number.isFinite(cursor) && cursor <= maxSeq ? cursor : 0
 
         for (const ev of log) {
@@ -91,15 +88,10 @@ export default createRoute({
         }
         if (terminated) return
 
-        // A finished message has no live producer; never enter the unbounded
-        // tail loop for one. The snapshot already replayed its terminal event
-        // in the normal case; this guards the pathological "meta terminal but
-        // log has no terminal frame" case against a full-window hang.
+        // A finished message has no live producer; do not tail.
         if (meta.status && TERMINAL.has(meta.status)) return
 
-        // Tail live events. Close on a terminal event, or on a stalled stream: if no
-        // new event arrives within the resume window the workflow died without a
-        // terminal frame (QStash retries exhausted), so stop rather than hang.
+        // Tail live events; bail on a terminal event or a stalled window.
         let seen = lastSeq
         let lastActivity = Date.now()
         while (!terminated) {
