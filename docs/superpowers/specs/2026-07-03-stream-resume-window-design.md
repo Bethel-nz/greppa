@@ -111,8 +111,9 @@ Replace the current 50 ms poll loop with a subscribe-then-snapshot sequence:
 1. Load meta. If missing or `conversationId` mismatch, emit `not_found` and return
    (unchanged gate; see item 6 for why these two cases share one signal).
 2. Subscribe to Realtime with `history: false`, buffering incoming live events.
-3. Snapshot the ZSET: `ZRANGEBYSCORE msg:<id>:events (cursor +inf` — or the full log
-   if the cursor is stale or unparseable (see item 7). Emit each snapshot event as SSE.
+3. Snapshot the ZSET: read the full log via `ZRANGE msg:<id>:events 0 -1`, then replay
+   events whose `seq > cursor` (or the full log if the cursor is stale or unparseable,
+   see item 7). Emit each snapshot event as SSE.
 4. Flush buffered live events whose `seq` is greater than the snapshot's max seq.
 5. Tail live events until a terminal `done`/`error` is forwarded, then close.
 6. **Liveness bound:** if no event arrives for `resumeWindowMs` (the workflow died

@@ -89,7 +89,7 @@ In `routes/chat.ts`, line 60:
 
 In `.env.example`, replace line 25:
 
-```
+```text
 GREPPA_RESUME_WINDOW_MS=300000
 ```
 
