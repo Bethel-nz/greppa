@@ -8,6 +8,7 @@ import { isInjectionAttempt } from '~/lib/security'
 import { loadGreppaConfig } from '~/lib/config'
 import { getOrgDocumentTimeline } from '~/lib/memory/service'
 import { buildTools, type ChatSource } from '~/lib/chat/tools'
+import { beginRun, setMeta } from '~/lib/chat/lifecycle'
 
 const SYSTEM_PROMPT = `You are Greppa, a personal knowledge assistant. Your sole purpose is to help users explore and understand the articles and documents stored in their memory.
 
@@ -46,6 +47,11 @@ const workflowHandler = serve(async (workflow) => {
   // separate, optional enrichment that still requires orgId.
   const isAuthenticated = !!userId
 
+  // Guard against QStash redelivery: a message that already reached a terminal
+  // status is a duplicate run and must no-op. A fresh attempt resets its event log.
+  const { skip } = await beginRun({ messageId, ttlMs: cfg.resumeWindowMs })
+  if (skip) return
+
   await emit('cue', { status: 'scanning_input', at: Date.now() })
 
   if (isInjectionAttempt(message)) {
@@ -53,7 +59,7 @@ const workflowHandler = serve(async (workflow) => {
       code: 'injection_blocked',
       reason: 'I can only help with questions about your stored knowledge.',
     })
-    await redis.hset(`msg:${messageId}:meta`, { status: 'error', finishedAt: Date.now() })
+    await setMeta({ messageId, ttlMs: cfg.resumeWindowMs, fields: { status: 'error', finishedAt: Date.now() } })
     return
   }
 
@@ -123,7 +129,7 @@ ${context.surrounding ? `Surrounding text: ...${context.surrounding}...` : ''}
   } catch (err) {
     console.error('[chat] generation failed:', err)
     await emit('error', { code: 'generation_failed', reason: 'Something went wrong generating a response.' })
-    await redis.hset(`msg:${messageId}:meta`, { status: 'error', finishedAt: Date.now() })
+    await setMeta({ messageId, ttlMs: cfg.resumeWindowMs, fields: { status: 'error', finishedAt: Date.now() } })
     return
   }
 
@@ -141,7 +147,7 @@ ${context.surrounding ? `Surrounding text: ...${context.surrounding}...` : ''}
   await redis.zadd(`history:${conversationId}`, { score: finalMsg.at, member: JSON.stringify(finalMsg) })
   await redis.expire(`history:${conversationId}`, Math.floor(cfg.sessionTtlMs / 1000))
 
-  await redis.hset(`msg:${messageId}:meta`, { status: 'done', finishedAt })
+  await setMeta({ messageId, ttlMs: cfg.resumeWindowMs, fields: { status: 'done', finishedAt } })
   await emit('done', {
     messageId,
     message: content,
