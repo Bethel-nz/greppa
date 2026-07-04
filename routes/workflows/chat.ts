@@ -146,7 +146,9 @@ ${context.surrounding ? `Surrounding text: ...${context.surrounding}...` : ''}
   await redis.zadd(`history:${conversationId}`, { score: finalMsg.at, member: JSON.stringify(finalMsg) })
   await redis.expire(`history:${conversationId}`, Math.floor(cfg.sessionTtlMs / 1000))
 
-  await setMeta({ messageId, ttlMs: cfg.resumeWindowMs, fields: { status: 'done', finishedAt } })
+  // Emit the terminal frame to the durable log before flipping meta to done, so a
+  // terminal meta always implies a terminal event exists to replay (matches the
+  // error paths, which also emit before setMeta).
   await emit('done', {
     messageId,
     message: content,
@@ -155,6 +157,7 @@ ${context.surrounding ? `Surrounding text: ...${context.surrounding}...` : ''}
     model,
     at: finishedAt,
   })
+  await setMeta({ messageId, ttlMs: cfg.resumeWindowMs, fields: { status: 'done', finishedAt } })
 })
 
 export default createRoute({

@@ -75,8 +75,21 @@ describe('chat stream resume', () => {
   test('unparseable (legacy ULID) cursor triggers a full replay', async () => {
     seedLog(sid, mid)
     const { text } = await stream(sid, mid, '01HXXXOLDULIDXXXXXXXXXXXXX1')
+    // A ULID starting with digits must not partial-parse to a seq; seq 1 (the cue)
+    // must still be replayed.
+    expect(text).toContain('id: 1')
     expect(text).toContain('AAA')
     expect(text).toContain('CCC')
+  })
+
+  test('terminal meta with no terminal frame in the log closes with an error', async () => {
+    fakeRedis[`msg:${mid}:meta`] = { conversationId: sid, status: 'done' }
+    zsets[`msg:${mid}:events`] = [
+      { score: 1, member: JSON.stringify({ id: '1', seq: 1, type: 'token', data: { token: 'XYZ' } }) },
+    ]
+    const { text } = await stream(sid, mid)
+    expect(text).toContain('XYZ')
+    expect(text).toContain('"code":"incomplete"')
   })
 
   test('stale cursor beyond max seq triggers a full replay', async () => {

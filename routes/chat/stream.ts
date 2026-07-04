@@ -42,7 +42,10 @@ export default createRoute({
       }
 
       const eventsKey = `msg:${messageId}:events`
-      const cursor = Number.parseInt(c.req.header('last-event-id') ?? '', 10)
+      // Strict digits only. A legacy ULID cursor ("01H...") must be unparseable so
+      // it triggers a full replay, not a partial parseInt that skips early events.
+      const rawCursor = c.req.header('last-event-id') ?? ''
+      const cursor = /^\d+$/.test(rawCursor) ? Number(rawCursor) : NaN
 
       let lastSeq = 0
       let terminated = false
@@ -81,15 +84,20 @@ export default createRoute({
           if (terminated) break
         }
 
+        // Drain buffered live events as a queue, then flip. Draining before the flip
+        // stops a newly-arrived event from jumping ahead and stranding a buffered one
+        // behind the seq high-water mark. The flip is synchronous with an empty buffer,
+        // so no onData can interleave between the two.
+        while (buffer.length && !terminated) await forward(buffer.shift()!)
         snapshotDone = true
-        for (const ev of buffer) {
-          if (terminated) break
-          await forward(ev)
-        }
         if (terminated) return
 
-        // A finished message has no live producer; do not tail.
-        if (meta.status && TERMINAL.has(meta.status)) return
+        // meta is terminal but the log carried no terminal frame (incomplete or
+        // expired log). Give the client closure instead of returning silently.
+        if (meta.status && TERMINAL.has(meta.status)) {
+          await stream.writeSSE({ event: 'error', data: JSON.stringify({ code: 'incomplete', reason: 'stream ended without a completion frame' }) })
+          return
+        }
 
         // Tail live events; bail on a terminal event or a stalled window.
         let seen = lastSeq
