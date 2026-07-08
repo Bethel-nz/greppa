@@ -2,8 +2,10 @@
 
 A reliable AI chat protocol for building systems that remember. Built on an async, resumable, session-scoped architecture that turns LLM inference into a robust message bus — not a fragile blocking call.
 
-**Current release:** Personal knowledge API (single-tenant)  
-**Ambition:** Multi-tenant AI memory protocol
+> **Status: active development.** greppa is a working design and reference implementation, not a finished product. The protocol, SDK, and ingestion pipeline are built out and unit-tested; the system is still being wired and exercised end-to-end, so expect rough edges and breaking changes.
+
+**Where it is:** single-tenant personal knowledge API, with multi-tenant memory (R2 + Memvid) landing.  
+**Where it's going:** a multi-tenant AI memory protocol.
 
 Built with [Sumi](https://github.com/bethel-nz/sumi) (Bun + Hono), [memvid](https://github.com/Bethel-nz/memvid) for RAG, and [Groq](https://groq.com) for LLM inference.
 
@@ -125,15 +127,21 @@ bun run dev
 
 ## Environment variables
 
+See [`.env.example`](.env.example) for the full list. The ones you need to run it:
+
 | Variable | Description |
 |----------|-------------|
-| `GROQ_API_KEY` | Required. Get one at console.groq.com |
-| `GREPPA_SESSION_SECRET` | Required. HMAC secret for sessions (32+ chars) |
-| `GREPPA_PUBLIC_URL` | Required. Public URL of your Greppa server |
-| `UPSTASH_REDIS_REST_URL` | Required. Upstash Redis URL |
-| `UPSTASH_REDIS_REST_TOKEN` | Required. Upstash Redis Token |
-| `QSTASH_TOKEN` | Required. Upstash QStash Token |
-| `MEMORY_PATH` | Path to the `.mv2` knowledge store (default: `chatbot-memory.mv2`) |
+| `GROQ_API_KEY` | LLM inference (Groq, via the Vercel AI SDK). Get one at console.groq.com |
+| `DATABASE_URL` | Postgres connection string |
+| `GREPPA_SESSION_SECRET` | HMAC secret for SDK sessions (32+ chars) |
+| `BETTER_AUTH_SECRET` | Secret for Better Auth (multi-tenant user login) |
+| `BETTER_AUTH_URL` | Better Auth base URL |
+| `GREPPA_PUBLIC_URL` | Public URL of your greppa server |
+| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis (event log + realtime) |
+| `QSTASH_TOKEN` | Upstash QStash (async chat workflow) |
+| `INTERNAL_API_KEY` | Worker-to-server auth |
+| `R2_*` | Cloudflare R2 for multi-tenant memory (see `.env.example`) |
+| `MEMVID_LOCAL_PATH` | Local path to the `.mv2` knowledge store |
 
 ## Deployment
 
@@ -149,18 +157,20 @@ docker compose up -d
 
 The knowledge store is persisted in a Docker volume (`greppa-data`). Set required environment variables in a `.env` file before starting.
 
-## Current Limitations
+## Current limitations
 
-greppa is a **single-tenant personal knowledge API** today. The architecture supports multi-tenancy (session isolation, scoped contexts, rate limits), but the underlying storage — [memvid](https://github.com/Bethel-nz/memvid) — uses a single `.mv2` file per instance with no native user isolation.
+greppa is a **single-tenant personal knowledge API** today, with multi-tenant memory (R2 + [memvid](https://github.com/Bethel-nz/memvid)) in progress. The architecture supports multi-tenancy (session isolation, scoped contexts, rate limits); the storage layer is what is still being brought up to it.
 
-This means:
-- ✅ Perfect for personal use or single-user deployments
-- ✅ All the protocol primitives (sessions, resumable streams, async workflows) are production-ready
-- ❌ Not yet suitable for multi-user SaaS without storage-layer work
+- Good for personal use or single-user deployments today.
+- The protocol primitives (sessions, resumable streams, async workflows) are implemented and covered by unit tests; they are being hardened as the system is run end-to-end.
+- Not yet suitable for multi-user SaaS — the R2-backed isolation is unfinished.
 
 ## Roadmap
 
 ### Now — v1 (Personal)
+
+_Implemented in code and unit-tested; being hardened as the system is exercised end-to-end._
+
 - [x] Async chat pipeline with QStash
 - [x] Resumable SSE streams with `last-event-id`
 - [x] HMAC-signed session management
