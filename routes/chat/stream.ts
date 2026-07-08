@@ -72,8 +72,12 @@ export default createRoute({
       })
 
       try {
-        const rawLog = (await redis.zrange(eventsKey, 0, -1)) as string[]
-        const log: StoredEvent[] = rawLog.map((m) => JSON.parse(m) as StoredEvent)
+        // Upstash auto-deserializes JSON members on read (returns objects); the
+        // in-memory test mock returns raw strings. Handle both.
+        const rawLog = (await redis.zrange(eventsKey, 0, -1)) as unknown[]
+        const log: StoredEvent[] = rawLog.map((m) =>
+          typeof m === 'string' ? (JSON.parse(m) as StoredEvent) : (m as StoredEvent),
+        )
         const maxSeq = log.length ? log[log.length - 1].seq : 0
 
         // Unparseable or stale cursor -> full replay.

@@ -113,4 +113,21 @@ describe('chat stream resume', () => {
     expect(text).toContain('event: cue')
     expect(text).toContain('"code":"stalled"')
   })
+
+  // Regression: real Upstash auto-deserializes JSON members, so zrange returns
+  // objects, not strings. The replay path previously JSON.parse'd them and threw,
+  // breaking resume in production while the string-returning mock stayed green.
+  test('replays when the store returns already-deserialized object members', async () => {
+    fakeRedis[`msg:${mid}:meta`] = { conversationId: sid, status: 'done' }
+    zsets[`msg:${mid}:events`] = [
+      { score: 1, member: { id: '1', seq: 1, type: 'cue', data: { status: 'thinking' } } },
+      { score: 2, member: { id: '2', seq: 2, type: 'token', data: { token: 'AAA' } } },
+      { score: 3, member: { id: '3', seq: 3, type: 'token', data: { token: 'BBB' } } },
+      { score: 4, member: { id: '4', seq: 4, type: 'done', data: { messageId: mid } } },
+    ] as any
+    const { text } = await stream(sid, mid, '2')
+    expect(text).not.toContain('AAA') // seq 2 <= cursor, not replayed
+    expect(text).toContain('BBB') // seq 3 replayed cleanly (no parse crash)
+    expect(text).toContain('event: done')
+  })
 })
