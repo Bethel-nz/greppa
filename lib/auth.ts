@@ -1,7 +1,7 @@
 import { type BetterAuthOptions, betterAuth } from 'better-auth'
 import { drizzleAdapter } from '@better-auth/drizzle-adapter'
 import { apiKey } from '@better-auth/api-key'
-import { customSession, jwt, username } from 'better-auth/plugins'
+import { customSession, jwt, openAPI, username } from 'better-auth/plugins'
 import { drizzle, schema } from './db'
 import { loadAuthConfig } from './auth-config'
 
@@ -28,9 +28,6 @@ const authConfig = {
       httpOnly: true,
       secure: cfg.baseUrl.startsWith('https://'),
       sameSite: 'lax',
-    },
-    database: {
-      generateId: false,
     },
   },
 
@@ -69,14 +66,6 @@ const authConfig = {
   },
 
   user: {
-    fields: {
-      email: 'email',
-      name: 'name',
-      image: 'image',
-      emailVerified: 'email_verified',
-      createdAt: 'created_at',
-      updatedAt: 'updated_at',
-    },
     additionalFields: {
       username: {
         type: 'string',
@@ -182,6 +171,9 @@ const authConfig = {
         return regex.test(username)
       },
     }),
+    // Exposes the auth OpenAPI schema at /api/v1/auth/open-api/generate-schema.
+    // Default Scalar UI disabled; the schema is a source in the Sumi docs page.
+    openAPI({ disableDefaultReference: true }),
   ],
 
   databaseHooks: {

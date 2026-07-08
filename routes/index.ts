@@ -8,9 +8,8 @@ export default createRoute({
         version: "1.0.0",
         description: "Multi-tenant AI memory platform. Ingest documents, search with ACL enforcement, and chat with your knowledge base.",
         endpoints: {
-          // Auth
+          // Auth (see the "Auth" source in /api/v1/docs for Better Auth endpoints)
           "GET    /me": "Get current authenticated user",
-          "GET    /api/v1/auth/*": "Better Auth endpoints (login, register, OAuth, api-key)",
           "GET    /me/api-keys": "List your API keys",
           "POST   /me/api-keys": "Create an API key (plaintext returned once)",
           "DELETE /me/api-keys/:keyId": "Revoke an API key",

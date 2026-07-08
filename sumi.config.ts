@@ -47,5 +47,9 @@ import { defineConfig } from '@bethel-nz/sumi';
       theme: 'saturn',
       darkMode: true,
       defaultOpenAllTags: true,
+      sources: [
+        { url: '/api/v1/openapi.json', title: 'Greppa API' },
+        { url: '/api/v1/auth/open-api/generate-schema', title: 'Auth' },
+      ],
     }
   });
