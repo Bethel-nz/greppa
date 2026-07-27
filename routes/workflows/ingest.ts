@@ -128,7 +128,7 @@ const workflowHandler = serve(async (workflow) => {
         sourceUrl: r2Key,
       }
     } else {
-      // memvid-native-file (PDF, DOCX, image, audio, video)
+      // native-file (PDF, DOCX, image, audio, video)
       commitPayload = {
         jobId,
         orgId,
@@ -136,7 +136,7 @@ const workflowHandler = serve(async (workflow) => {
         documentId,
         title,
         sourceType: 'document',
-        mode: 'memvid-native-file',
+        mode: 'native-file',
         r2Key,
         sourceUrl: r2Key,
       }
@@ -160,7 +160,7 @@ const workflowHandler = serve(async (workflow) => {
         documentId,
         status: 'processing',
         progress: 50,
-        type: 'memvid.commit.started',
+        type: 'memory.commit.started',
         message: 'Sending to memory commit endpoint',
       })
 
@@ -189,7 +189,7 @@ const workflowHandler = serve(async (workflow) => {
         documentId,
         status: 'processing',
         progress: 80,
-        type: 'memvid.commit.completed',
+        type: 'memory.commit.completed',
         message: 'Memory commit completed',
       })
 
@@ -239,7 +239,7 @@ export default createRoute({
     openapi: {
       summary: 'Internal: Document ingestion workflow',
       description:
-        'Upstash Workflow handler for document ingestion. Downloads from R2, parses content, and commits to Memvid via the internal memory commit endpoint. Never writes to the local .mv2 directly.',
+        'Upstash Workflow handler for document ingestion. Downloads from R2, parses content, and commits through the internal memory commit endpoint. Never writes a scope database directly.',
       tags: ['internal'],
     },
   },

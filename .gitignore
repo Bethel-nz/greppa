@@ -59,3 +59,6 @@ temp/
 
 # SDK Sub-repository
 packages/greppa-sdk/
+
+# Checkpoint local cache
+.greppa/

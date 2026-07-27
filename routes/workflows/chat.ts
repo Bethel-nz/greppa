@@ -64,7 +64,7 @@ const workflowHandler = serve(async (workflow) => {
 
   await emit('cue', { status: 'building_context', at: Date.now() })
 
-  // Catalog from the documents table (control plane) rather than the memvid timeline.
+  // Catalog from the documents table (control plane) rather than the memory store.
   let catalogNote: string
   if (orgId) {
     const docs = await getOrgDocumentTimeline(orgId, 100)

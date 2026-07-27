@@ -1,10 +1,14 @@
 import { eq, count, sql } from 'drizzle-orm'
 import { drizzle, schema } from '../db'
-import { openGreppaMemory, invalidateGreppaMemory, LOCAL_MEMORY_PATH } from './memvid'
+import { getCheckpoint, NotFoundError } from '~/utils/checkpoint'
 import { getAclContext, type GreppaAclContext } from './acl'
+import { generateAnswer } from './answer'
+import { embedInBatches, getEmbeddingProvider } from './embedding'
 import { enqueueMemoryWrite } from './queue'
-import { uploadMemoryToR2 } from './r2'
-import { markMemoryDirty } from './sync'
+import { orgScopeObjectKey } from './scope'
+import { chunkText } from './scope-store/chunker'
+import { decayConfigFromEnv } from './scope-store/decay'
+import { hybridSearch, insertDocument, openScopeStore, type AclContext } from './scope-store/store'
 
 export type AddMemoryInput = {
   userId: string
@@ -15,23 +19,8 @@ export type AddMemoryInput = {
   sourceUrl?: string
 }
 
-export type SearchMemoryInput = {
-  userId: string
-  orgId: string
-  query: string
-  limit?: number
-}
-
-export type AskMemoryInput = {
-  userId: string
-  orgId: string
-  question: string
-  limit?: number
-}
-
-function normalizeAclStrings(values: string[]): string[] {
-  return values.map((v) => v.trim().toLowerCase()).filter(Boolean)
-}
+export type SearchMemoryInput = { userId: string; orgId: string; query: string; limit?: number }
+export type AskMemoryInput = { userId: string; orgId: string; question: string; limit?: number }
 
 export type CommitMemoryCardInput = {
   acl: GreppaAclContext
@@ -44,45 +33,60 @@ export type CommitMemoryCardInput = {
 }
 
 /**
- * The single source of truth for the Memvid ACL metadata shape. Every write path
- * must build metadata here so the schema can never drift between callers.
+ * Org memory is one scope-store database per organisation, served through
+ * Checkpoint. Cross-tenant isolation is therefore structural — orgs do not
+ * share a file — and the ACL columns below enforce visibility *within* an org,
+ * which physical separation cannot do.
+ *
+ * This replaced a single global `.mv2` in which every tenant's data shared one
+ * file and separation depended entirely on query-time metadata filtering.
  */
-function buildAclMetadata(input: CommitMemoryCardInput) {
+function toDocumentAcl(input: CommitMemoryCardInput) {
   return {
-    acl_tenant_id: input.acl.tenantId,
-    acl_visibility: 'restricted' as const,
-    acl_read_roles: input.acl.roles,
-    acl_read_groups: input.acl.groupIds,
-    acl_read_principals: normalizeAclStrings([input.userId]),
-    acl_policy_version: 'v1',
-    source_document_id: input.documentId,
-    source_type: input.sourceType,
-    source_url: input.sourceUrl,
-    created_by: input.userId,
-    app: 'greppa',
+    tenantId: input.acl.tenantId,
+    visibility: 'restricted' as const,
+    readRoles: input.acl.roles,
+    readGroups: input.acl.groupIds,
+    readPrincipals: [input.userId],
   }
 }
 
+const toReaderContext = (acl: GreppaAclContext): AclContext => ({
+  tenantId: acl.tenantId,
+  subjectId: acl.subjectId,
+  roles: acl.roles,
+  groupIds: acl.groupIds,
+})
+
 /**
- * Low-level write into the active .mv2: put + seal + upload + invalidate cache.
- * Does NOT enqueue — callers must already be inside enqueueMemoryWrite() so the
- * single-writer invariant holds. This is the only place routes/services touch
- * the Memvid handle for writes (plan security rule #6).
+ * Low-level write into the org's scope database. Does NOT enqueue — callers
+ * must already be inside enqueueMemoryWrite() so the single-writer invariant
+ * holds. Embeddings are computed before Checkpoint's lock is taken.
  */
 export async function commitMemoryCard(input: CommitMemoryCardInput): Promise<void> {
-  const mem = await openGreppaMemory()
+  const provider = getEmbeddingProvider()
+  const texts = chunkText(input.text)
+  if (texts.length === 0) throw new Error('[memory] refusing to store an empty memory')
+  const vectors = await embedInBatches(provider, texts, 'document')
 
-  await mem.put({
-    title: input.title,
-    label: input.sourceType,
-    text: input.text,
-    metadata: buildAclMetadata(input),
+  await getCheckpoint().write(orgScopeObjectKey(input.acl.tenantId), async (localPath, exists) => {
+    const store = openScopeStore(localPath, { provider, create: !exists })
+    try {
+      insertDocument(store, {
+        id: input.documentId,
+        title: input.title,
+        text: input.text,
+        sourceType: input.sourceType,
+        sourceUrl: input.sourceUrl,
+        createdBy: input.userId,
+        meta: { app: 'greppa', source_document_id: input.documentId },
+        acl: toDocumentAcl(input),
+        chunks: texts.map((text, i) => ({ text, embedding: vectors[i]!, modality: 'text' as const })),
+      })
+    } finally {
+      store.close()
+    }
   })
-
-  await mem.seal()
-  await uploadMemoryToR2(LOCAL_MEMORY_PATH)
-  invalidateGreppaMemory()
-  markMemoryDirty()
 }
 
 export async function addMemory(input: AddMemoryInput) {
@@ -119,7 +123,6 @@ export async function addMemory(input: AddMemoryInput) {
       sourceUrl: input.sourceUrl,
     })
 
-    // Update document status
     await drizzle
       .update(schema.documents)
       .set({ status: 'indexed', indexedAt: new Date() })
@@ -140,38 +143,37 @@ export async function addMemory(input: AddMemoryInput) {
 
 export async function searchMemory(input: SearchMemoryInput) {
   const acl = await getAclContext({ userId: input.userId, orgId: input.orgId })
-  const mem = await openGreppaMemory()
+  const provider = getEmbeddingProvider()
+  const [queryVector] = await provider.embed([input.query], 'query')
 
-  return await mem.find(input.query, {
-    k: input.limit ?? 8,
-    aclContext: {
-      tenantId: acl.tenantId,
-      subjectId: acl.subjectId,
-      roles: acl.roles,
-      groupIds: acl.groupIds,
-    },
-    aclEnforcementMode: 'enforce',
-  })
+  try {
+    const hits = await getCheckpoint().read(orgScopeObjectKey(acl.tenantId), async (localPath) => {
+      const store = openScopeStore(localPath, { provider, create: false, readonly: true })
+      try {
+        return hybridSearch(store, input.query, queryVector!, input.limit ?? 8, toReaderContext(acl), decayConfigFromEnv())
+      } finally {
+        store.close()
+      }
+    })
+    return { hits: hits.map((h) => ({ ...h, snippet: h.text })), total_hits: hits.length }
+  } catch (err) {
+    if (err instanceof NotFoundError) return { hits: [], total_hits: 0 }
+    throw err
+  }
 }
 
 export async function askMemory(input: AskMemoryInput) {
-  const acl = await getAclContext({ userId: input.userId, orgId: input.orgId })
-  const mem = await openGreppaMemory()
-
-  return await mem.ask(input.question, {
-    k: input.limit ?? 10,
-    aclContext: {
-      tenantId: acl.tenantId,
-      subjectId: acl.subjectId,
-      roles: acl.roles,
-      groupIds: acl.groupIds,
-    },
-    aclEnforcementMode: 'enforce',
+  const { hits } = await searchMemory({
+    userId: input.userId,
+    orgId: input.orgId,
+    query: input.question,
+    limit: input.limit ?? 10,
   })
-}
+  if (hits.length === 0) return { answer: null, sources: [], context: '', grounding: null }
 
-export async function syncMemoryToR2() {
-  await uploadMemoryToR2(LOCAL_MEMORY_PATH)
+  const context = hits.map((h, i) => `### [${i + 1}] ${h.title}\n${h.text}`).join('\n\n')
+  const answer = await generateAnswer({ question: input.question, context })
+  return { answer, sources: hits, context, grounding: null }
 }
 
 export async function getOrgStats(orgId: string) {
@@ -183,23 +185,14 @@ export async function getOrgStats(orgId: string) {
       .then((r) => r[0]?.count ?? 0),
 
     drizzle
-      .select({
-        kind: schema.memoryEvents.kind,
-        count: count(),
-      })
+      .select({ kind: schema.memoryEvents.kind, count: count() })
       .from(schema.memoryEvents)
       .where(eq(schema.memoryEvents.orgId, orgId))
       .groupBy(schema.memoryEvents.kind)
-      .then((rows) =>
-        Object.fromEntries(rows.map((r) => [r.kind, r.count])),
-      ),
+      .then((rows) => Object.fromEntries(rows.map((r) => [r.kind, r.count]))),
   ])
 
-  return {
-    orgId,
-    documents: docCount,
-    events: eventCounts,
-  }
+  return { orgId, documents: docCount, events: eventCounts }
 }
 
 export async function getOrgDocumentTimeline(orgId: string, limit: number = 100) {

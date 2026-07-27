@@ -1,7 +1,11 @@
-import { create, open, use } from '@memvid/sdk'
-import type { Memvid } from '@memvid/sdk'
-import { getCheckpoint } from '~/utils/checkpoint'
-import { NotFoundError } from '~/utils/checkpoint'
+import { getCheckpoint, NotFoundError } from '~/utils/checkpoint'
+import { R2Storage } from '~/utils/r2'
+import { generateAnswer } from './answer'
+import { putAssetIfAbsent } from './assets'
+import { embedInBatches, getEmbeddingProvider } from './embedding'
+import { chunkText } from './scope-store/chunker'
+import { decayConfigFromEnv } from './scope-store/decay'
+import { hybridSearch, insertDocument, openScopeStore, type ChunkInput } from './scope-store/store'
 import { getOrCreatePersonalScope, scopeObjectKey } from './scope'
 
 export type ScopedSourceType = 'note' | 'chat' | 'document' | 'webpage' | 'agent_event'
@@ -12,73 +16,108 @@ export type AddScopedMemoryInput = {
   text: string
   sourceType?: ScopedSourceType
   sourceUrl?: string
+  image?: { bytes: Uint8Array; mime: string }
 }
 
-export type SearchScopedMemoryInput = {
-  userId: string
-  query: string
-  limit?: number
-}
+export type SearchScopedMemoryInput = { userId: string; query: string; limit?: number }
+export type AskScopedMemoryInput = { userId: string; question: string; limit?: number }
 
-export type AskScopedMemoryInput = {
-  userId: string
-  question: string
-  limit?: number
-}
-
-/** Open an existing scope file read-only, mirroring the robustness of the
- * legacy path (open() with a use() fallback across SDK versions). */
-async function openReadOnly(localPath: string): Promise<Memvid> {
-  try {
-    return await open(localPath, 'basic', { readOnly: true })
-  } catch {
-    return await use('basic', localPath)
-  }
+/**
+ * A retrieved chunk. `snippet` mirrors `text` so existing consumers
+ * (lib/chat/tools.ts) keep working against the shape Memvid used to return.
+ */
+export type ScopedHit = {
+  title: string
+  snippet: string
+  text: string
+  score: number
+  documentId: string
+  chunkId: number
+  sourceType: string
+  sourceUrl: string | null
+  modality: string
+  assetSha256: string | null
 }
 
 /**
- * Append a memory to the caller's personal scope. The Memvid handle is opened,
- * written, and sealed entirely inside the checkpoint write callback so the
- * uploaded bytes are always a sealed file (see Checkpoint.write contract).
+ * Append a memory to the caller's personal scope.
+ *
+ * Embeddings and asset uploads happen BEFORE Checkpoint's per-scope lock is
+ * taken, so the mutex is held only for local SQLite writes. That keeps write
+ * latency off the network path and makes Checkpoint's conflict-rerun cheap: a
+ * rerun replays local inserts without re-billing the embedding API.
  */
 export async function addScopedMemory(input: AddScopedMemoryInput) {
   const scopeId = await getOrCreatePersonalScope(input.userId)
   const key = scopeObjectKey(scopeId)
   const sourceType = input.sourceType ?? 'note'
+  const provider = getEmbeddingProvider()
 
-  const frameId = await getCheckpoint().write(key, async (localPath, exists) => {
-    const mem = exists
-      ? await use('basic', localPath)
-      : await create(localPath, 'basic', { enableLex: true, enableVec: true })
+  const texts = chunkText(input.text)
+  const vectors = texts.length ? await embedInBatches(provider, texts, 'document') : []
+  const chunks: ChunkInput[] = texts.map((text, i) => ({
+    text,
+    embedding: vectors[i]!,
+    modality: 'text',
+  }))
 
-    const id = await mem.put({
-      title: input.title,
-      label: sourceType,
-      text: input.text,
-      metadata: {
-        source_type: sourceType,
-        source_url: input.sourceUrl,
-        created_by: input.userId,
-        app: 'greppa',
-      },
+  if (input.image) {
+    if (!provider.embedImage) {
+      throw new Error(`[memory] embedding provider ${provider.id} cannot embed images`)
+    }
+    const digest = await putAssetIfAbsent(R2Storage.fromEnv(), scopeId, input.image.bytes)
+    const [vector] = await provider.embedImage([input.image])
+    chunks.push({
+      // Carry the title as chunk text so an image is still lexically findable.
+      text: input.title,
+      embedding: vector!,
+      modality: input.text.trim() ? 'text_image' : 'image',
+      assetSha256: digest,
+      assetMime: input.image.mime,
     })
+  }
 
-    await mem.seal()
-    return id
+  if (chunks.length === 0) throw new Error('[memory] refusing to store an empty memory')
+
+  const documentId = await getCheckpoint().write(key, async (localPath, exists) => {
+    const store = openScopeStore(localPath, { provider, create: !exists })
+    try {
+      return insertDocument(store, {
+        title: input.title,
+        text: input.text,
+        sourceType,
+        sourceUrl: input.sourceUrl,
+        createdBy: input.userId,
+        meta: { app: 'greppa', source_type: sourceType },
+        chunks,
+      })
+    } finally {
+      // Must close before Checkpoint seals and uploads the file.
+      store.close()
+    }
   })
 
-  return { scopeId, frameId, status: 'indexed' as const }
+  return { scopeId, documentId, status: 'indexed' as const }
 }
 
-export async function searchScopedMemory(input: SearchScopedMemoryInput) {
+export async function searchScopedMemory(
+  input: SearchScopedMemoryInput,
+): Promise<{ hits: ScopedHit[]; total_hits: number }> {
   const scopeId = await getOrCreatePersonalScope(input.userId)
   const key = scopeObjectKey(scopeId)
+  const provider = getEmbeddingProvider()
+  const [queryVector] = await provider.embed([input.query], 'query')
 
   try {
-    return await getCheckpoint().read(key, async (localPath) => {
-      const mem = await openReadOnly(localPath)
-      return mem.find(input.query, { k: input.limit ?? 8 })
+    const hits = await getCheckpoint().read(key, async (localPath) => {
+      const store = openScopeStore(localPath, { provider, create: false, readonly: true })
+      try {
+        return hybridSearch(store, input.query, queryVector!, input.limit ?? 8, undefined, decayConfigFromEnv())
+      } finally {
+        store.close()
+      }
     })
+    return { hits: hits.map((h) => ({ ...h, snippet: h.text })), total_hits: hits.length }
   } catch (err) {
     // No memory written yet for this scope -> empty result, not an error.
     if (err instanceof NotFoundError) return { hits: [], total_hits: 0 }
@@ -87,19 +126,14 @@ export async function searchScopedMemory(input: SearchScopedMemoryInput) {
 }
 
 export async function askScopedMemory(input: AskScopedMemoryInput) {
-  const scopeId = await getOrCreatePersonalScope(input.userId)
-  const key = scopeObjectKey(scopeId)
+  const { hits } = await searchScopedMemory({
+    userId: input.userId,
+    query: input.question,
+    limit: input.limit ?? 10,
+  })
+  if (hits.length === 0) return { answer: null, sources: [], context: '', grounding: null }
 
-  try {
-    return await getCheckpoint().read(key, async (localPath) => {
-      const mem = await openReadOnly(localPath)
-      return mem.ask(input.question, { k: input.limit ?? 10 })
-    })
-  } catch (err) {
-    // No memory written yet -> empty answer with the same shape mem.ask() returns.
-    if (err instanceof NotFoundError) {
-      return { answer: null, sources: [], context: '', grounding: null }
-    }
-    throw err
-  }
+  const context = hits.map((h, i) => `### [${i + 1}] ${h.title}\n${h.text}`).join('\n\n')
+  const answer = await generateAnswer({ question: input.question, context })
+  return { answer, sources: hits, context, grounding: null }
 }

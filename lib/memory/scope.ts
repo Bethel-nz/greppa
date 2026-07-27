@@ -1,10 +1,17 @@
 import { and, eq } from 'drizzle-orm'
 import { drizzle, schema } from '../db'
 
-/** Object key for a scope's Memvid file. The storage layer knows nothing about
- * users or workspaces; ownership lives in the scopes/scope_members tables. */
+/** Object key for a scope's SQLite memory database. The storage layer knows
+ * nothing about users or workspaces; ownership lives in the scopes/scope_members
+ * tables. Image assets sit alongside at scopes/{id}/assets/{sha256}. */
 export function scopeObjectKey(scopeId: string): string {
-  return `scopes/${scopeId}/memory.mv2`
+  return `scopes/${scopeId}/memory.sqlite`
+}
+
+/** Object key for an organisation's shared memory database. Namespaced apart
+ * from personal scopes so an org id can never collide with a scope id. */
+export function orgScopeObjectKey(orgId: string): string {
+  return `orgs/${orgId}/memory.sqlite`
 }
 
 /** Thrown when a user may not access the requested scope. Routes map this to 403. */

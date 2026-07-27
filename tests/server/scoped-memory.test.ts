@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, mock, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rm, writeFileSync } from 'node:fs'
+import { mkdtempSync, rm } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Checkpoint } from '~/utils/checkpoint/checkpoint'
@@ -7,17 +7,21 @@ import { MemoryStorage } from '~/utils/checkpoint/storage'
 import { NotFoundError } from '~/utils/checkpoint/errors'
 
 // scoped-service has three hard dependencies we replace at the seam:
-//   1. ./scope      -> map userId to a stable scopeId without Postgres
+//   1. ./scope       -> map userId to a stable scopeId without Postgres
 //   2. ~/utils/checkpoint -> a real Checkpoint over MemoryStorage (no R2)
-//   3. @memvid/sdk  -> a fake that persists records to the local file so the
-//      full write -> seal -> upload -> download -> read round-trip is real.
+//   3. ./answer      -> the grounded-answer LLM call, so ask() needs no model
+//
+// The store itself is NOT faked. These tests exercise real SQLite, real
+// sqlite-vec and real FTS5 through the full write -> seal -> upload -> download
+// -> read round-trip. The embedding provider defaults to `deterministic`, which
+// needs no network (Bun skips .env.local when NODE_ENV=test).
 
 const cacheDir = mkdtempSync(join(tmpdir(), 'scoped-cp-'))
 const sharedCp = new Checkpoint({ storage: new MemoryStorage(), cacheDir, maxOpen: 8, idleMs: 60_000 })
 
 mock.module('../../lib/memory/scope', () => ({
   getOrCreatePersonalScope: async (userId: string) => `scope-${userId}`,
-  scopeObjectKey: (scopeId: string) => `scopes/${scopeId}/memory.mv2`,
+  scopeObjectKey: (scopeId: string) => `scopes/${scopeId}/memory.sqlite`,
 }))
 
 mock.module('../../utils/checkpoint', () => ({
@@ -25,53 +29,13 @@ mock.module('../../utils/checkpoint', () => ({
   NotFoundError,
 }))
 
-// Persistent fake Memvid: records live in the .mv2 file as JSON so reopening a
-// file (the read path's copy-on-read snapshot) sees what was sealed.
-type Rec = { id: string; title: string; label: string; text: string; metadata: any }
-
-function loadRecords(path: string): Rec[] {
-  if (!existsSync(path)) return []
-  const raw = readFileSync(path, 'utf8')
-  return raw ? (JSON.parse(raw) as Rec[]) : []
-}
-
-class FakeMem {
-  constructor(private path: string, private records: Rec[]) {}
-  async put(rec: Omit<Rec, 'id'>) {
-    const id = `frame_${this.records.length + 1}`
-    this.records.push({ id, ...rec })
-    return id
-  }
-  async seal() {
-    writeFileSync(this.path, JSON.stringify(this.records))
-  }
-  private match(query: string, k: number) {
-    const q = query.toLowerCase()
-    return this.records
-      .filter((r) => `${r.title} ${r.text}`.toLowerCase().includes(q))
-      .slice(0, k)
-      .map((r) => ({ title: r.title, snippet: r.text, score: 1 }))
-  }
-  async find(query: string, opts?: { k?: number }) {
-    const hits = this.match(query, opts?.k ?? 8)
-    return { hits, total_hits: hits.length }
-  }
-  async ask(question: string, opts?: { k?: number }) {
-    const hits = this.match(question, opts?.k ?? 10)
-    if (!hits.length) return { answer: null, sources: [], context: '', grounding: null }
-    return {
-      answer: hits[0].snippet,
-      sources: hits,
-      context: hits.map((h) => h.snippet).join('\n'),
-      grounding: { ok: true },
-    }
-  }
-}
-
-mock.module('@memvid/sdk', () => ({
-  create: async (path: string) => new FakeMem(path, []),
-  use: async (_kind: string, path: string) => new FakeMem(path, loadRecords(path)),
-  open: async (path: string) => new FakeMem(path, loadRecords(path)),
+// Echo the top retrieved chunk instead of calling a model, so assertions stay
+// deterministic while still proving the context handed to the LLM is correct.
+mock.module('../../lib/memory/answer', () => ({
+  generateAnswer: async ({ context }: { context: string }) => {
+    const first = context.split('\n\n')[0] ?? ''
+    return first.split('\n').slice(1).join('\n')
+  },
 }))
 
 const { addScopedMemory, askScopedMemory, searchScopedMemory } = await import('~/lib/memory/scoped-service')
@@ -83,48 +47,61 @@ let n = 0
 const freshUser = () => `u${Date.now()}-${n++}`
 
 describe('scoped-service', () => {
-  test('addScopedMemory creates the scope file and returns an indexed frame', async () => {
+  test('addScopedMemory creates the scope file and returns an indexed document', async () => {
     const userId = freshUser()
     const res = await addScopedMemory({ userId, title: 'Pets', text: 'I have a dog named Rex.' })
 
     expect(res.scopeId).toBe(`scope-${userId}`)
-    expect(res.frameId).toBe('frame_1')
+    expect(res.documentId).toMatch(/^[0-9a-f-]{36}$/)
     expect(res.status).toBe('indexed')
   })
 
-  test('a written memory round-trips through storage and is retrievable via ask', async () => {
+  test('a written memory round-trips through storage and is retrievable', async () => {
     const userId = freshUser()
     await addScopedMemory({ userId, title: 'Pets', text: 'I have a dog named Rex.' })
 
-    const ans = await askScopedMemory({ userId, question: 'dog' })
-    expect(ans.answer).toBe('I have a dog named Rex.')
-    expect(ans.sources).toHaveLength(1)
+    const found = await searchScopedMemory({ userId, query: 'dog named Rex' })
+    expect(found.total_hits).toBe(1)
+    expect(found.hits[0]!.title).toBe('Pets')
+    expect(found.hits[0]!.snippet).toContain('Rex')
+
+    const ans = await askScopedMemory({ userId, question: 'dog named Rex' })
+    expect(ans.answer).toContain('Rex')
     expect(ans.context).toContain('Rex')
   })
 
-  test('a second memory appends (use path), it does not overwrite the first', async () => {
+  test('a second memory appends, it does not overwrite the first', async () => {
     const userId = freshUser()
     const first = await addScopedMemory({ userId, title: 'Pets', text: 'I have a dog named Rex.' })
     const second = await addScopedMemory({ userId, title: 'Food', text: 'I love jollof rice.' })
+    expect(first.documentId).not.toBe(second.documentId)
 
-    expect(first.frameId).toBe('frame_1')
-    expect(second.frameId).toBe('frame_2')
+    const dog = await searchScopedMemory({ userId, query: 'dog named Rex' })
+    const food = await searchScopedMemory({ userId, query: 'jollof rice' })
+    expect(dog.hits[0]!.title).toBe('Pets')
+    expect(food.hits[0]!.title).toBe('Food')
+  })
 
-    const dog = await askScopedMemory({ userId, question: 'dog' })
-    const food = await askScopedMemory({ userId, question: 'jollof' })
-    expect(dog.answer).toBe('I have a dog named Rex.')
-    expect(food.answer).toBe('I love jollof rice.')
+  test('a long memory is chunked into several retrievable pieces', async () => {
+    const userId = freshUser()
+    const long = Array.from(
+      { length: 12 },
+      (_, i) => `Paragraph ${i} discusses distinctive topic marker${i} at some length to force splitting.`,
+    ).join('\n\n')
+    await addScopedMemory({ userId, title: 'Long', text: long, sourceType: 'document' })
+
+    const res = await searchScopedMemory({ userId, query: 'marker7 distinctive topic' })
+    expect(res.hits.length).toBeGreaterThan(0)
+    expect(res.hits[0]!.title).toBe('Long')
   })
 
   test('askScopedMemory on an empty scope returns the empty answer shape, not an error', async () => {
-    const userId = freshUser()
-    const ans = await askScopedMemory({ userId, question: 'anything' })
+    const ans = await askScopedMemory({ userId: freshUser(), question: 'anything' })
     expect(ans).toEqual({ answer: null, sources: [], context: '', grounding: null })
   })
 
   test('searchScopedMemory on an empty scope returns no hits, not an error', async () => {
-    const userId = freshUser()
-    const res = await searchScopedMemory({ userId, query: 'anything' })
+    const res = await searchScopedMemory({ userId: freshUser(), query: 'anything' })
     expect(res).toEqual({ hits: [], total_hits: 0 })
   })
 
@@ -135,5 +112,22 @@ describe('scoped-service', () => {
 
     const bobView = await askScopedMemory({ userId: bob, question: 'bees' })
     expect(bobView.answer).toBeNull()
+    expect(bobView.sources).toEqual([])
+  })
+
+  test('refuses to store an empty memory rather than writing a vectorless document', async () => {
+    await expect(addScopedMemory({ userId: freshUser(), title: 'Empty', text: '   ' })).rejects.toThrow(
+      /empty memory/,
+    )
+  })
+
+  test('hits carry the fields lib/chat/tools.ts consumes', async () => {
+    const userId = freshUser()
+    await addScopedMemory({ userId, title: 'Shape', text: 'distinctive payload for shape checking' })
+    const { hits } = await searchScopedMemory({ userId, query: 'distinctive payload shape' })
+    const hit = hits[0]!
+    expect(typeof hit.title).toBe('string')
+    expect(typeof hit.snippet).toBe('string')
+    expect(typeof hit.score).toBe('number')
   })
 })

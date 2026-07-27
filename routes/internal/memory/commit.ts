@@ -15,7 +15,7 @@ const commitSchema = z.object({
   documentId: z.string().min(1),
   title: z.string().min(1),
   sourceType: z.enum(['note', 'chat', 'document', 'webpage', 'agent_event']),
-  mode: z.enum(['text', 'memvid-native-file']).default('text'),
+  mode: z.enum(['text', 'native-file']).default('text'),
   text: z.string().optional(),
   r2Key: z.string().optional(),
   sourceUrl: z.string().optional(),
@@ -51,8 +51,8 @@ export default createRoute({
 
       // Native-file ingestion (download from R2 + parse) is not implemented yet.
       // Fail loudly rather than indexing placeholder text into ACL-scoped memory.
-      if (body.mode === 'memvid-native-file') {
-        return c.json({ error: 'memvid-native-file ingestion not implemented' }, 501)
+      if (body.mode === 'native-file') {
+        return c.json({ error: 'native-file ingestion not implemented' }, 501)
       }
 
       const result = await enqueueMemoryWrite(async () => {
@@ -62,7 +62,7 @@ export default createRoute({
           documentId: body.documentId,
           status: 'committing',
           progress: 60,
-          type: 'memvid.commit.started',
+          type: 'memory.commit.started',
           message: 'Writing document into memory',
         })
 
@@ -101,7 +101,7 @@ export default createRoute({
     },
     openapi: {
       summary: 'Internal: Commit memory write',
-      description: 'Internal endpoint for Trigger.dev or workers to commit writes to the active Memvid file. Requires x-internal-api-key.',
+      description: "Internal endpoint for workers to commit writes into an organisation's scope database. Requires x-internal-api-key.",
       tags: ['internal'],
       responses: {
         200: {

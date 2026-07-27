@@ -2,8 +2,7 @@ import { z } from "zod";
 import { createRoute } from "@bethel-nz/sumi/router";
 import { resolver } from "hono-openapi/zod";
 import { getOrgStats } from "../lib/memory/service";
-import { getMemvidLocalStats } from "../lib/memory/stats";
-import { countR2Snapshots } from "../lib/memory/r2";
+import { getMemoryCacheStats } from "../lib/memory/stats";
 
 const statsSchema = z.object({
   orgId: z.string(),
@@ -29,11 +28,8 @@ export default createRoute({
         return c.json({ error: 'orgId query param required' }, 400)
       }
 
-      const [docStats, memvidStats, r2SnapshotCount] = await Promise.all([
-        getOrgStats(orgId),
-        getMemvidLocalStats(),
-        countR2Snapshots('greppa/prod/').catch(() => 0),
-      ])
+      const docStats = await getOrgStats(orgId)
+      const cache = getMemoryCacheStats()
 
       return c.json({
         orgId,
@@ -44,15 +40,16 @@ export default createRoute({
           failed: docStats.events['memory.ingest.failed'] ?? 0,
         },
         memory: {
-          localFileSizeBytes: memvidStats.sizeBytes,
-          localFileModifiedAt: memvidStats.modifiedAt,
-          r2SnapshotCount,
+          openScopes: cache.openScopes,
+          cacheBytes: cache.cacheBytes,
+          cacheBudgetBytes: cache.cacheBudgetBytes,
+          overBudget: cache.overBudget,
         },
       });
     },
     openapi: {
       summary: "Organization memory stats",
-      description: "Returns document counts, Memvid local file size, and R2 snapshot count.",
+      description: "Returns document counts and local scope-cache utilisation.",
       tags: ["stats"],
       responses: {
         200: {

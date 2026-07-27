@@ -1,8 +1,7 @@
 import { createRoute } from '@bethel-nz/sumi/router'
 import { resolver } from 'hono-openapi/zod'
 import { z } from 'zod'
-import { r2ObjectExists, R2_MEMORY_KEY } from '~/lib/memory/r2'
-import { getMemvidLocalStats } from '~/lib/memory/stats'
+import { getMemoryCacheStats } from '~/lib/memory/stats'
 import { getDrizzle } from '~/lib/db'
 import { eq, count, sql } from 'drizzle-orm'
 
@@ -12,13 +11,12 @@ const healthSchema = z.object({
   r2: z.object({
     ok: z.boolean(),
     bucket: z.string(),
-    activeObjectExists: z.boolean(),
   }),
-  memvid: z.object({
+  memoryCache: z.object({
     ok: z.boolean(),
-    localPath: z.string(),
-    sizeBytes: z.number(),
-    modifiedAt: z.string().nullable(),
+    openScopes: z.number(),
+    cacheBytes: z.number(),
+    cacheBudgetBytes: z.number().nullable(),
   }),
   worker: z.object({
     pendingJobs: z.number(),
@@ -32,27 +30,29 @@ export default createRoute({
     handler: async (c) => {
       const neonOk = await checkNeon()
       const r2Ok = await checkR2()
-      const memvidStats = await getMemvidLocalStats()
+      const cache = getMemoryCacheStats()
       const workerStats = await checkWorker()
 
-      const status = neonOk && r2Ok.ok && memvidStats.exists ? 'ok' : 'degraded'
+      // No single memory file exists to check any more; memory is per-scope and
+      // hydrated on demand, so R2 reachability is the meaningful storage signal.
+      const status = neonOk && r2Ok.ok && !cache.overBudget ? 'ok' : 'degraded'
 
       return c.json({
         status,
         neon: { ok: neonOk },
         r2: r2Ok,
-        memvid: {
-          ok: memvidStats.exists,
-          localPath: memvidStats.path,
-          sizeBytes: memvidStats.sizeBytes,
-          modifiedAt: memvidStats.modifiedAt,
+        memoryCache: {
+          ok: !cache.overBudget,
+          openScopes: cache.openScopes,
+          cacheBytes: cache.cacheBytes,
+          cacheBudgetBytes: cache.cacheBudgetBytes,
         },
         worker: workerStats,
       })
     },
     openapi: {
       summary: 'Internal: Memory health check',
-      description: 'Checks Neon, R2, Memvid local file, and ingestion worker status.',
+      description: 'Checks Neon, R2, the local scope cache, and ingestion worker status.',
       tags: ['internal'],
       responses: {
         200: {
@@ -74,12 +74,20 @@ async function checkNeon(): Promise<boolean> {
   }
 }
 
-async function checkR2(): Promise<{ ok: boolean; bucket: string; activeObjectExists: boolean }> {
+/**
+ * Reachability only. There is no single memory object to probe: memory is one
+ * database per scope, so a missing object for any given scope is normal (that
+ * scope simply has no memories yet). A successful list proves credentials and
+ * connectivity, which is what a health check can meaningfully assert.
+ */
+async function checkR2(): Promise<{ ok: boolean; bucket: string }> {
+  const bucket = process.env.R2_BUCKET ?? 'greppa-memory'
   try {
-    const exists = await r2ObjectExists(R2_MEMORY_KEY)
-    return { ok: true, bucket: process.env.R2_BUCKET ?? 'greppa-memory', activeObjectExists: exists }
+    const { R2Storage } = await import('~/utils/r2')
+    await R2Storage.fromEnv().list('scopes/')
+    return { ok: true, bucket }
   } catch {
-    return { ok: false, bucket: process.env.R2_BUCKET ?? 'greppa-memory', activeObjectExists: false }
+    return { ok: false, bucket }
   }
 }
 
