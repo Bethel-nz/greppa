@@ -45,5 +45,20 @@ export function getCheckpoint(): Checkpoint {
     idleMs: envInt('CHECKPOINT_IDLE_MS', 300_000),
   })
   if (process.env.NODE_ENV === 'production') _checkpoint.startEviction()
+
+  // Opt-in, because a cacheDir shared by two processes would make another
+  // instance's live generations look like orphans. Safe to enable when this
+  // process owns CHECKPOINT_CACHE_DIR, which is the intended deployment.
+  if (process.env.CHECKPOINT_SWEEP_ON_BOOT === '1') {
+    void _checkpoint
+      .sweepOrphans()
+      .then(({ removed, bytes }) => {
+        if (removed > 0) {
+          console.info(`[checkpoint] swept ${removed} orphaned generation(s), reclaimed ${bytes} bytes`)
+        }
+      })
+      .catch((err) => console.warn('[checkpoint] orphan sweep failed:', err))
+  }
+
   return _checkpoint
 }

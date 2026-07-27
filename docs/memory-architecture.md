@@ -247,6 +247,24 @@ This is reachable two ways: enough concurrent scopes to outweigh the budget, or
 a single scope larger than the entire budget — in which case every read of that
 scope is over budget for its whole duration. Alarm on `overBudget` staying true.
 
+### Orphaned generations
+
+Checkpoint keeps **no persistent index**. The open map is rebuilt from R2 on
+every boot and a local generation is never reused across restarts, so a crash
+leaves `.generation-`/`.write-`/`.hydrate-` files that no instance will claim.
+They are invisible to `maxCacheBytes` and nothing reclaims them, which leaks
+slowly on a long-lived host with a persistent cacheDir.
+
+`sweepOrphans()` removes them, guarded twice: it skips anything created since
+the instance started (that is our own live or in-flight work) and anything
+younger than `minAgeMs`, default one hour. The second guard is what keeps a
+*concurrent* process's pinned generations out of reach — from inside this
+process they are indistinguishable from orphans.
+
+It is opt-in via `CHECKPOINT_SWEEP_ON_BOOT=1` rather than automatic, because
+that age floor narrows the multi-process race without closing it. A cacheDir
+shared by two processes is outside this design; give each its own.
+
 ---
 
 ## 9. The embedding seam

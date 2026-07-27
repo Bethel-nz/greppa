@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Checkpoint } from './checkpoint'
@@ -455,5 +456,79 @@ describe('Checkpoint', () => {
     await cp.delete(K('u1'))
     expect(await storage.head(K('u1'))).toBeNull()
     await expect(cp.read(K('u1'), async () => 'x')).rejects.toBeInstanceOf(NotFoundError)
+  })
+})
+
+describe('sweepOrphans', () => {
+  test('removes generation files stranded by a previous process', async () => {
+    const dir = await cacheDir()
+    const stale = join(dir, 'users/u1')
+    await mkdir(stale, { recursive: true })
+    // Simulate a crashed run: generation files with an old mtime.
+    const old = new Date(Date.now() - 6 * 60 * 60_000)
+    for (const name of [
+      'memory.sqlite.generation-11111111-1111-1111-1111-111111111111',
+      'memory.sqlite.write-22222222-2222-2222-2222-222222222222',
+      'memory.sqlite.hydrate-33333333-3333-3333-3333-333333333333',
+    ]) {
+      const p = join(stale, name)
+      await writeFile(p, enc.encode('orphaned'))
+      await utimes(p, old, old)
+    }
+
+    const cp = new Checkpoint({ storage: new MemoryStorage(), cacheDir: dir, maxOpen: 8, idleMs: 1000 })
+    const swept = await cp.sweepOrphans()
+    expect(swept.removed).toBe(3)
+    expect(swept.bytes).toBeGreaterThan(0)
+    expect((await readdir(stale)).length).toBe(0)
+  })
+
+  test('never touches a generation this instance is actively using', async () => {
+    const dir = await cacheDir()
+    const cp = new Checkpoint({ storage: new MemoryStorage(), cacheDir: dir, maxOpen: 8, idleMs: 10_000 })
+    await cp.write(K('u1'), async (p) => writeFile(p, enc.encode('live')))
+
+    // minAgeMs 0 is the most aggressive sweep possible; our own live
+    // generation must still survive because it is newer than startedAt.
+    const swept = await cp.sweepOrphans({ minAgeMs: 0 })
+    expect(swept.removed).toBe(0)
+    expect(await cp.read(K('u1'), async (p) => dec.decode(await readFile(p)))).toBe('live')
+  })
+
+  test('leaves recent files alone even when they predate this instance', async () => {
+    const dir = await cacheDir()
+    const recent = join(dir, 'users/u2')
+    await mkdir(recent, { recursive: true })
+    // Written before the Checkpoint below is constructed, but only moments ago —
+    // this is what a concurrent process's live generation looks like from here.
+    const p = join(recent, 'memory.sqlite.generation-44444444-4444-4444-4444-444444444444')
+    await writeFile(p, enc.encode('another process is using this'))
+
+    const cp = new Checkpoint({ storage: new MemoryStorage(), cacheDir: dir, maxOpen: 8, idleMs: 1000 })
+    expect((await cp.sweepOrphans({ minAgeMs: 60 * 60_000 })).removed).toBe(0)
+    expect((await readdir(recent)).length).toBe(1)
+  })
+
+  test('ignores files that are not generations', async () => {
+    const dir = await cacheDir()
+    await mkdir(join(dir, 'users/u3'), { recursive: true })
+    const keep = join(dir, 'users/u3/memory.sqlite')
+    const old = new Date(Date.now() - 6 * 60 * 60_000)
+    await writeFile(keep, enc.encode('not a generation'))
+    await utimes(keep, old, old)
+
+    const cp = new Checkpoint({ storage: new MemoryStorage(), cacheDir: dir, maxOpen: 8, idleMs: 1000 })
+    expect((await cp.sweepOrphans({ minAgeMs: 0 })).removed).toBe(0)
+    expect(existsSync(keep)).toBe(true)
+  })
+
+  test('is a no-op when the cache dir does not exist', async () => {
+    const cp = new Checkpoint({
+      storage: new MemoryStorage(),
+      cacheDir: join(tmpdir(), `checkpoint-missing-${crypto.randomUUID()}`),
+      maxOpen: 8,
+      idleMs: 1000,
+    })
+    expect(await cp.sweepOrphans()).toEqual({ removed: 0, bytes: 0 })
   })
 })

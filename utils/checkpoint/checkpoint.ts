@@ -1,5 +1,5 @@
 import { constants } from 'node:fs'
-import { access, copyFile, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { access, copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { Mutex } from 'async-mutex'
 import { ConflictError, NotFoundError } from './errors'
@@ -56,6 +56,8 @@ export class Checkpoint {
   private timer: ReturnType<typeof setInterval> | null = null
   private bytes = 0
   private warnedOverBudget = false
+  /** Wall clock at construction. Anything newer than this belongs to us. */
+  private readonly startedAt: number
 
   constructor(cfg: CheckpointConfig) {
     this.storage = cfg.storage
@@ -64,6 +66,7 @@ export class Checkpoint {
     this.maxCacheBytes = cfg.maxCacheBytes ?? Number.POSITIVE_INFINITY
     this.idleMs = cfg.idleMs
     this.now = cfg.now ?? Date.now
+    this.startedAt = Date.now()
   }
 
   get openCount(): number {
@@ -372,6 +375,65 @@ export class Checkpoint {
         await this.invalidate(key, entry)
       }
     })
+  }
+
+  /**
+   * Delete generation files stranded by a previous process.
+   *
+   * Checkpoint keeps no persistent index: the open map is rebuilt from R2 on
+   * every boot, and a local generation is never reused across restarts. So a
+   * crash leaves `.generation-`/`.write-`/`.hydrate-` files that no instance
+   * will ever claim — they are invisible to `maxCacheBytes` and nothing
+   * reclaims them. On a long-lived host with a persistent cacheDir that leaks.
+   *
+   * Two guards make this safe rather than destructive:
+   *
+   * 1. **Nothing newer than this instance is touched.** Files created since
+   *    construction are ours — either a tracked generation or a working copy
+   *    mid-write, which is a local variable and appears in no map.
+   * 2. **Nothing younger than `minAgeMs` is touched.** If another process
+   *    shares this cacheDir, its live generations look exactly like orphans
+   *    from here. The age floor is what keeps a concurrent instance's pinned
+   *    files out of reach.
+   *
+   * Guard 2 narrows the multi-process race but cannot close it. A cacheDir
+   * shared by two processes is outside this design; give each its own.
+   */
+  async sweepOrphans(opts: { minAgeMs?: number } = {}): Promise<{ removed: number; bytes: number }> {
+    const minAgeMs = opts.minAgeMs ?? 60 * 60_000
+    const cutoff = Math.min(this.startedAt, Date.now() - minAgeMs)
+    const result = { removed: 0, bytes: 0 }
+
+    const walk = async (dir: string): Promise<void> => {
+      let entries
+      try {
+        entries = await readdir(dir, { withFileTypes: true })
+      } catch {
+        return // cacheDir may not exist yet
+      }
+      for (const e of entries) {
+        const p = join(dir, e.name)
+        if (e.isDirectory()) {
+          await walk(p)
+          continue
+        }
+        if (!/\.(generation|write|hydrate)-[0-9a-f-]{36}$/.test(e.name)) continue
+
+        const s = await stat(p).catch(() => null)
+        if (!s || s.mtimeMs >= cutoff) continue
+
+        await rm(p, { force: true }).then(
+          () => {
+            result.removed++
+            result.bytes += s.size
+          },
+          () => {}, // raced with another sweep; not an error
+        )
+      }
+    }
+
+    await walk(this.cacheDir)
+    return result
   }
 
   startEviction(intervalMs = 60_000): void {

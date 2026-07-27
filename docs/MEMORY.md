@@ -250,6 +250,7 @@ read of it.
 | `CHECKPOINT_MAX_OPEN` | `64` | Maximum scopes held open; start at 8–16 |
 | `CHECKPOINT_MAX_CACHE_BYTES` | `2gb` | Byte budget; accepts `512mb`, `8gb` |
 | `CHECKPOINT_IDLE_MS` | `300000` | Idle sweep threshold |
+| `CHECKPOINT_SWEEP_ON_BOOT` | `0` | Delete generation files stranded by a crashed run. Enable only when this process owns the cache dir |
 | `EMBEDDING_PROVIDER` | `deterministic` | `openrouter` \| `google` \| `openai-compatible` \| `deterministic` |
 | `EMBEDDING_MODEL` | per provider | Note: OpenRouter requires the `:free` suffix on the Nemotron model id |
 | `EMBEDDING_DIM` | per provider | Fixed at scope creation; changing it requires `reembedScope()` |

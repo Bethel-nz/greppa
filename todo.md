@@ -25,6 +25,7 @@
 - [x] Evict least-recently-used, idle, unreferenced scope files until both entry-count and byte budgets are satisfied.
 - [x] Account for a private working generation during writes and retired generations pinned by active readers.
 - [x] Define the over-budget contract: never evict a pinned generation, never fail a request for the budget, report via `overBudget`.
+- [x] Reclaim generation files stranded by a crashed process (`sweepOrphans()`, opt-in via `CHECKPOINT_SWEEP_ON_BOOT=1`). Guarded against deleting a concurrent instance's live files, but a shared cacheDir remains unsupported.
 - [ ] Consider physical-block accounting on copy-on-write filesystems; the current budget counts logical size, so an APFS `clonefile` working generation is over-counted until the writer diverges.
 
 ## Validate the 100 MB case
