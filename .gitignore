@@ -62,3 +62,12 @@ packages/greppa-sdk/
 
 # Checkpoint local cache
 .greppa/
+
+# Editor / agent configs
+.cursor/
+.gemini/
+.codex/
+opencode.json
+
+# Generated codebase dump
+sample.md
