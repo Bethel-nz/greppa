@@ -90,12 +90,15 @@ The API contract, SDK, and session model are designed as a reusable protocol. Th
 │                     EXTERNAL SERVICES                       │
 │                                                             │
 │  ┌────────────┐  ┌─────────────┐  ┌──────────────────────┐ │
-│  │   Groq     │  │   memvid    │  │      Upstash         │ │
-│  │  (LLM)     │  │  (.mv2 RAG) │  │  • Redis (sessions)  │ │
+│  │   Groq     │  │ Cloudflare  │  │      Upstash         │ │
+│  │  (LLM)     │  │     R2      │  │  • Redis (sessions)  │ │
 │  │            │  │             │  │  • Realtime (SSE)    │ │
-│  │  tool_use  │  │  • ask()    │  │  • QStash (queues)   │ │
-│  │  streaming │  │  • find()   │  │                      │ │
+│  │  tool_use  │  │ scope .sqlite│ │  • QStash (queues)   │ │
+│  │  streaming │  │ + assets    │  │                      │ │
 │  └────────────┘  └─────────────┘  └──────────────────────┘ │
+│                                                             │
+│  Retrieval itself is in-process: SQLite + sqlite-vec + FTS5 │
+│  runs inside the Bun process against a hydrated local file. │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -168,7 +171,7 @@ The chat generation is handled by a QStash Workflow, not inline. This provides a
 
 | Step | Cue Emitted | Description |
 |------|-------------|-------------|
-| `build-catalog` | `building_context` | Fetches article titles from memvid to build a knowledge catalog |
+| `build-catalog` | `building_context` | Fetches article titles from the documents table to build a knowledge catalog |
 | `probe` | `thinking` | First Groq call with tool choice. The LLM decides if RAG is needed |
 | `search` | `searching_knowledge` | If tool was called, runs `mem.ask()` or `mem.find()` |
 | `generate` | `generating` | Final streaming completion with full context |
@@ -249,23 +252,34 @@ DELETE /api/v1/session
 
 ## Knowledge & RAG
 
-### Storage: memvid
+### Storage: the scope store
 
-Greppa uses `@memvid/sdk` — a local file-based vector store (`chatbot-memory.mv2`). It supports both lexical and semantic search.
+Greppa no longer uses Memvid. Memory is a store we wrote: **SQLite + `sqlite-vec` + FTS5**, one database file per scope, kept in Cloudflare R2 and checked out to local disk on demand by the Checkpoint layer.
 
-**Important**: memvid requires a persistent filesystem. This makes Greppa incompatible with serverless platforms (Vercel, Netlify, Cloudflare Workers) unless a remote storage adapter (S3/R2) is added.
+```
+scopes/{scopeId}/memory.sqlite     personal scope   (compare-and-set published)
+scopes/{scopeId}/assets/{sha256}   image blobs      (immutable, write-once)
+orgs/{orgId}/memory.sqlite         org scope        (+ per-document ACL)
+```
+
+Retrieval is hybrid — a `vec0` vector index and an FTS5 BM25 index over the same rows, merged by reciprocal rank fusion. Embeddings come from a pluggable provider whose identity is pinned in the file, so a model change is a loud error rather than silently wrong distances.
+
+> **Full detail:** [memory-architecture.md](./memory-architecture.md) — layering, read/write paths, conflict resolution, cache budgets, ACL enforcement, failure modes.
+> **Why it exists:** [why-own-memory.md](./why-own-memory.md) · **Limitations:** [MEMORY.md](./MEMORY.md)
+
+**Important**: the scope store still requires a persistent filesystem for the Checkpoint cache. This makes Greppa incompatible with serverless platforms (Vercel, Netlify, Cloudflare Workers) unless `CHECKPOINT_CACHE_DIR` is mounted on durable storage. The R2 adapter exists; the local cache is what needs the disk.
 
 ### Ingestion
 
 - `POST /knowledge` — Plain text articles
 - `PUT /knowledge` — Multipart file uploads (PDF, DOCX, XLSX, PPTX)
-- memvid auto-extracts text, generates embeddings, and indexes
+- Text is chunked (~1000 chars, 150 overlap), embedded, and written with its vector and BM25 row in a single transaction
 
 ### Retrieval Flow
 
 1. **Catalog Note**: A system message listing all article titles is prepended to the conversation. This guides the LLM's tool-use decision.
 2. **Tool-Use Probe**: The LLM is given a `search_knowledge` function. The probe step lets it decide if RAG is needed.
-3. **Semantic Search**: If tool is called, `mem.ask(query, { returnSources: true, k: 5 })` retrieves relevant context.
+3. **Hybrid Search**: If the tool is called, `askScopedMemory()` embeds the query, runs vector + BM25 retrieval over the scope, fuses the two ranked lists, and returns the top chunks with their source documents.
 4. **Injection Scan**: Retrieved snippets are scanned for prompt injection patterns before being injected into the completion prompt.
 5. **Streaming Generation**: The full context (conversation + sources) is sent to Groq for streaming completion.
 
@@ -420,14 +434,19 @@ Sumi (`@bethel-nz/sumi`) is a file-based router for Hono, similar to Next.js App
 
 All three share the same Upstash account and region, minimizing latency.
 
-### Why memvid?
+### Why SQLite + sqlite-vec + FTS5?
 
-- Local file-based (no network latency for search)
-- Hybrid lexical + semantic search
-- Auto-embedding with multiple providers
-- Built-in document parsing (PDF, DOCX, etc.)
+- **One file per scope** — isolation is physical, not a filter every query must remember
+- **In-process** — no server to run so a user's assistant can recall a fact
+- **`bun:sqlite` ships inside Bun** — the driver is not an N-API addon
+- **Hybrid retrieval in one transaction** — vectors and BM25 over the same rows, so they cannot drift
+- **Exact vector search** — 100% recall, where HNSW engines are approximate
+- **Openable by anyone** — a user's memory is a file any SQLite tool can read
 
-Tradeoff: Requires persistent filesystem, limiting deployment options.
+Tradeoffs: every write republishes the whole scope file, vector search is brute
+force, and a persistent filesystem is still required for the Checkpoint cache.
+See [MEMORY.md](./MEMORY.md) for the full list; [why-own-memory.md](./why-own-memory.md)
+for why this replaced Memvid.
 
 ### Why Groq?
 
@@ -440,16 +459,24 @@ Tradeoff: Requires persistent filesystem, limiting deployment options.
 
 ## Known Limitations
 
-### Single-Tenant Storage
+### Write Amplification
 
-memvid uses a single `.mv2` file. There is no native user isolation. All sessions share the same knowledge base. Multi-tenancy requires either:
-- Contributing isolation to memvid
-- Adding a Postgres/pgvector adapter
-- Using file-per-tenant with a storage backend (S3/R2)
+Checkpoint publishes whole objects under a compare-and-set, so appending a 2 KB
+note to a 16 MiB scope uploads 16 MiB. Local insertion takes ~0.5 ms; the upload
+takes seconds. Write coalescing — batching appends per scope behind a short
+debounce inside one `Checkpoint.write` — is the highest-value outstanding
+optimisation and is not yet built.
+
+### Brute-Force Vector Search
+
+`sqlite-vec` scans every vector. That is a recall *advantage* (exact, not
+approximate) but cost grows linearly: ~3.4 ms at 350 vectors, ~100 ms at 10k,
+~1 s at 100k **within a single scope**. Personal-scale memory sits comfortably
+inside this; a single scope with 100k+ chunks does not.
 
 ### Persistent Filesystem Requirement
 
-memvid requires disk. This rules out:
+The Checkpoint cache requires disk. This rules out:
 - Vercel
 - Netlify
 - Cloudflare Workers
@@ -480,19 +507,20 @@ The architecture supports one user, one knowledge base, infinite sessions. All t
 
 ### v1.5 (Next): Power User
 
-To support multiple knowledge bases per instance:
-- Namespace isolation in memvid (or multiple `.mv2` files)
-- Scoped knowledge ingestion (`/knowledge?namespace=work`)
-- Export/import knowledge bundles
+Per-scope isolation is **done** — every user and org already gets its own
+database file, so the original plan here (namespacing inside a shared index) is
+obsolete. What remains:
+- Export/import knowledge bundles (a scope is one file plus its assets, so this is now mostly packaging)
+- Multiple named scopes per user (`/knowledge?scope=work`)
 
 These changes are additive — the existing session and streaming model doesn't change.
 
 ### v2 (Future): Multi-Tenant Protocol
 
 To support teams and organizations:
-- **Storage Adapter**: Replace or augment memvid with a multi-tenant backend (Postgres + pgvector, or memvid with tenant isolation)
-- **Organization Scoping**: Add `orgId` to sessions, rate limits, and knowledge bases
-- **Permissions**: Role-based access to knowledge bases (read, write, admin)
+- ~~**Storage Adapter**~~ — **done.** One scope store per tenant, served through Checkpoint.
+- ~~**Organization Scoping**~~ — **done.** `orgs/{orgId}/memory.sqlite`, with membership resolved before the object key is derived.
+- **Permissions** — partially done. Documents carry `acl_read_roles`, `acl_read_groups` and `acl_read_principals`, enforced as a SQL predicate during retrieval. Not yet surfaced as an admin-facing API.
 - **Protocol Versioning**: The `GREPPA_PROTOCOL_VERSION` header exists but is not enforced. Formalize the contract.
 - **Hosted Offering**: `greppa.cloud` — we host the protocol, customers bring knowledge
 
@@ -508,7 +536,7 @@ The following architectural decisions are future-proof:
 
 ### What Needs to Change
 
-- **Storage layer**: memvid → multi-tenant adapter
+- ~~**Storage layer**~~: done — per-scope SQLite store behind Checkpoint
 - **Auth layer**: Session-only → optional OAuth/user system
 - **Knowledge scoping**: Global → namespace/tenant-scoped
 - **Analytics**: None → event aggregation and metrics
@@ -533,7 +561,8 @@ The following architectural decisions are future-proof:
 ## References
 
 - [Sumi Framework](https://github.com/bethel-nz/sumi)
-- [memvid SDK](https://github.com/Bethel-nz/memvid)
+- [sqlite-vec](https://github.com/asg017/sqlite-vec)
+- [SQLite FTS5](https://www.sqlite.org/fts5.html)
 - [Hono](https://hono.dev)
 - [Upstash](https://upstash.com)
 - [Groq](https://groq.com)

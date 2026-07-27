@@ -261,6 +261,7 @@ type CheckpointConfig = {
   storage: StorageBackend
   cacheDir: string
   maxOpen: number
+  maxCacheBytes?: number   // soft byte budget; defaults to Infinity
   idleMs: number
   now?: () => number
 }
@@ -273,6 +274,11 @@ interface StorageBackend {
   putIfMatch(key: string, body: Uint8Array, etag: string | null): Promise<string>
   delete(key: string): Promise<void>
   list(prefix: string): Promise<ObjectMeta[]>
+
+  // Optional file-oriented pair. R2Storage implements both so a 100 MiB .mv2
+  // streams to and from disk instead of passing through the JS heap.
+  getToFile?(key: string, localPath: string): Promise<{ etag: string } | null>
+  putFileIfMatch?(key: string, localPath: string, etag: string | null): Promise<string>
 }
 ```
 
@@ -284,25 +290,31 @@ interface StorageBackend {
      a. Check Entry in this.open Map
      b. If miss → hydrate(key, true):
         - storage.get(key) → download from R2 (or null if new)
-        - If null and create=true → return Entry with exists=false
-        - If found → writeFile(localPath, body), return Entry with exists=true
+        - If null and create=true → return Entry with current=null
+        - If found → atomically publish an immutable local generation
 3. Increment entry.refcount
-4. evictIfNeeded(): if open.size > maxOpen, evict LRU idle entry
-5. Call fn(localPath, exists):
+4. evictIfNeeded(): evict LRU idle entries until open.size <= maxOpen
+     AND cacheBytes <= maxCacheBytes
+5. Build a private working generation:
+     - Existing scope → copy-on-write clone the current generation when supported
+     - New scope → callback creates the first file
+6. Call fn(workingPath, exists):
      - exists=false → Memvid create() new store file
      - exists=true → Memvid use() existing store file
      - Caller appends data, then seal()s
-6. flush(entry):
-     - readFile(localPath) → bytes
-     - storage.putIfMatch(key, body, entry.etag) → conditional upload
-       - If ConflictError (ETag mismatch): re-head, retry once
-     - Update entry.etag with new etag from storage
-7. Set entry.exists = true
-8. release(entry): decrement refcount, update lastUsed
-9. Return fn's return value
+7. Rename the sealed working file into an immutable candidate generation
+8. Stream the candidate through storage.putFileIfMatch(key, path, entry.etag)
+9. If the compare-and-set succeeds:
+     - Atomically switch entry.current to the candidate
+     - Retire the previous generation after its active readers release it
+10. If ConflictError is returned:
+     - Delete the stale candidate
+     - Invalidate and rehydrate from R2
+     - Rerun fn against the winning generation
+11. release(entry): decrement refcount, update lastUsed
 ```
 
-### Read Flow (Snapshot Isolation)
+### Read Flow (Immutable Generation)
 
 ```
 1. mutexFor(key).runExclusive() — acquire per-key Mutex
@@ -311,14 +323,13 @@ interface StorageBackend {
      b. If miss → hydrate(key, false):
         - storage.get(key) → download from R2
         - If null → throw NotFoundError
-3. Increment entry.refcount
-4. Snapshot isolation: copyFile(localPath → localPath + ".rd-" + uuid)
-5. Release Mutex immediately (fn runs WITHOUT lock)
-6. Call fn(snapshotPath) — reads snapshot while writes may happen in parallel
-7. Finally: rm(snapshotPath), release(entry)
+3. Pin entry.current by incrementing its generation refcount
+4. Release Mutex immediately (fn runs WITHOUT lock)
+5. Call fn(generationPath) directly; there is no per-read file copy
+6. Finally: release the generation and delete it only if it was retired
 ```
 
-The snapshot isolation design means long LLM reads never block concurrent writes to the same memory file, and writes never cause torn reads.
+Immutable generations mean long LLM reads never block concurrent writes, never see torn bytes, and do not copy the complete `.mv2` for every RAG lookup.
 
 ### Singleton Factory (`client.ts`)
 
@@ -328,10 +339,62 @@ getCheckpoint(): Checkpoint {
   //   storage: R2Storage.fromEnv()
   //   cacheDir: process.env.CHECKPOINT_CACHE_DIR ?? './.greppa/checkpoint'
   //   maxOpen: Number(process.env.CHECKPOINT_MAX_OPEN ?? 64)
+  //   maxCacheBytes: process.env.CHECKPOINT_MAX_CACHE_BYTES ?? 2gb
   //   idleMs: Number(process.env.CHECKPOINT_IDLE_MS ?? 300_000)  // 5 min
   // Auto-starts periodic eviction in production
 }
 ```
+
+### Memory engine
+
+greppa does **not** use Memvid. Scope memory is our own store: SQLite +
+sqlite-vec + FTS5, one database file per scope, served through Checkpoint.
+See [MEMORY.md](./MEMORY.md) for the design, the measurements that motivated
+replacing Memvid, and a full list of limitations.
+
+### Configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CHECKPOINT_CACHE_DIR` | `./.greppa/checkpoint` | Where generations live. Must be on persistent SSD-backed storage, never a serverless ephemeral filesystem. |
+| `CHECKPOINT_MAX_OPEN` | `64` | Maximum scopes held open. Start at `8`-`16` in production. |
+| `CHECKPOINT_MAX_CACHE_BYTES` | `2gb` | Byte budget for the local cache. Accepts a raw byte count or a binary suffix (`512mb`, `8gb`). |
+| `CHECKPOINT_IDLE_MS` | `300000` | How long an unreferenced entry survives before the idle sweep drops it. |
+
+### The Local Cache Budget
+
+`maxOpen` alone cannot bound disk use, because scope memories differ by orders
+of magnitude. `maxCacheBytes` adds a byte budget and **both limits apply** —
+eviction runs until the open set is within `maxOpen` and the tracked bytes are
+within `maxCacheBytes`.
+
+What counts toward the budget:
+
+- every current generation,
+- every private working generation being built during a write,
+- every hydrated candidate awaiting its conditional upload,
+- every retired generation still pinned by an in-flight reader.
+
+Sizes come from `stat()` at hydration and after each successful write, so a
+100 MiB `.mv2` is never read into the JS heap merely to be measured.
+
+**When pinned generations alone exceed the budget**, eviction stops rather than
+deleting a file an active reader is using. Requests are never failed to satisfy
+the budget. The overage is visible on `checkpoint.overBudget` and logged once
+per transition into the state, and it clears as those operations finish. Two
+situations reach it:
+
+1. Enough concurrent scopes to outweigh the budget — transient, self-correcting.
+2. A single scope larger than the entire budget — **not** self-correcting: every
+   read of that scope is over budget for its whole duration. `maxCacheBytes`
+   must be set above the largest scope the deployment intends to serve, with
+   headroom for a write (which transiently holds the current generation, a
+   working clone, and a candidate at once).
+
+Note that on APFS and other copy-on-write filesystems the working generation
+starts as a `clonefile` clone sharing blocks with its parent, so the budget
+over-counts physical disk until the writer diverges. The accounting is
+deliberately logical-size based: it is the portable, cheap-to-measure number.
 
 ---
 
