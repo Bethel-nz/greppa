@@ -6,6 +6,9 @@ import {
   DeleteObjectCommand,
   ListObjectsV2Command,
 } from '@aws-sdk/client-s3'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { stat } from 'node:fs/promises'
+import { pipeline } from 'node:stream/promises'
 import { ConflictError } from './checkpoint/errors'
 import type { ObjectMeta, StorageBackend } from './checkpoint/storage'
 
@@ -17,6 +20,47 @@ function isNotFound(err: unknown): boolean {
 function isPreconditionFailed(err: unknown): boolean {
   const e = err as { name?: string; $metadata?: { httpStatusCode?: number } }
   return e?.name === 'PreconditionFailed' || e?.$metadata?.httpStatusCode === 412
+}
+
+/**
+ * Worth another attempt with a freshly created stream. Deliberately excludes
+ * the conditional-write failure and ordinary client errors: a 412 is a real
+ * compare-and-set loss that Checkpoint must handle by rehydrating, not by
+ * retrying the same bytes.
+ */
+function isTransient(err: unknown): boolean {
+  if (isPreconditionFailed(err) || isNotFound(err)) return false
+  const e = err as { $metadata?: { httpStatusCode?: number } }
+  const status = e?.$metadata?.httpStatusCode
+  if (status && status >= 400 && status < 500 && status !== 408 && status !== 429) return false
+  return true
+}
+
+const TRANSFER_ATTEMPTS = 3
+
+/**
+ * Retry a transfer, giving the callback a fresh attempt number so it can build
+ * a new stream. The AWS SDK marks any request with a stream body as
+ * non-retryable — once the stream is consumed it cannot replay it — so a
+ * dropped socket mid-upload surfaces as a hard failure unless we retry out
+ * here and hand it a new `createReadStream`.
+ *
+ * Retrying a conditional PUT is safe: if an attempt actually landed and only
+ * its response was lost, the next attempt's IfMatch/IfNoneMatch fails with a
+ * 412, which Checkpoint already treats as a conflict to rehydrate and rerun.
+ */
+async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
+  let last: unknown
+  for (let attempt = 0; attempt < TRANSFER_ATTEMPTS; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      last = err
+      if (!isTransient(err) || attempt + 1 >= TRANSFER_ATTEMPTS) throw err
+      await new Promise((r) => setTimeout(r, 250 * 2 ** attempt))
+    }
+  }
+  throw last
 }
 
 export type R2StorageConfig = {
@@ -35,6 +79,11 @@ export class R2Storage implements StorageBackend {
     this.client = new S3Client({
       region: 'auto',
       endpoint: `https://${cfg.accountId}.r2.cloudflarestorage.com`,
+      // R2's S3 endpoint expects path-style bucket addressing. Limiting the
+      // SDK to required checksums also avoids Bun's incompatible automatic
+      // streaming checksum wrapper for ordinary PutObject requests.
+      forcePathStyle: true,
+      requestChecksumCalculation: 'WHEN_REQUIRED',
       credentials: { accessKeyId: cfg.accessKeyId, secretAccessKey: cfg.secretAccessKey },
     })
   }
@@ -72,6 +121,22 @@ export class R2Storage implements StorageBackend {
     }
   }
 
+  async getToFile(key: string, localPath: string): Promise<{ etag: string } | null> {
+    try {
+      return await withRetry(async () => {
+        const r = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }))
+        if (!r.Body) throw new Error(`[r2] object ${key} has no body`)
+        // createWriteStream truncates, so a retry after a partial download
+        // starts from an empty file rather than appending to torn bytes.
+        await pipeline(r.Body as NodeJS.ReadableStream, createWriteStream(localPath))
+        return { etag: r.ETag ?? '' }
+      })
+    } catch (err) {
+      if (isNotFound(err)) return null
+      throw err
+    }
+  }
+
   async putIfMatch(key: string, body: Uint8Array, etag: string | null): Promise<string> {
     try {
       const r = await this.client.send(
@@ -84,6 +149,30 @@ export class R2Storage implements StorageBackend {
         }),
       )
       return r.ETag ?? ''
+    } catch (err) {
+      if (isPreconditionFailed(err)) throw new ConflictError(key)
+      throw err
+    }
+  }
+
+  async putFileIfMatch(key: string, localPath: string, etag: string | null): Promise<string> {
+    try {
+      return await withRetry(async () => {
+        const { size } = await stat(localPath)
+        const r = await this.client.send(
+          new PutObjectCommand({
+            Bucket: this.bucket,
+            Key: key,
+            // Create the stream for this attempt. A retry must never reuse a
+            // consumed stream.
+            Body: createReadStream(localPath),
+            ContentLength: size,
+            ContentType: 'application/octet-stream',
+            ...(etag ? { IfMatch: etag } : { IfNoneMatch: '*' }),
+          }),
+        )
+        return r.ETag ?? ''
+      })
     } catch (err) {
       if (isPreconditionFailed(err)) throw new ConflictError(key)
       throw err
