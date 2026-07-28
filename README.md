@@ -1,31 +1,61 @@
 # greppa
 
-A reliable AI chat protocol for building systems that remember. Built on an async, resumable, session-scoped architecture that turns LLM inference into a robust message bus — not a fragile blocking call.
+Greppa is a context and delivery layer for AI systems that need to remember
+across requests without making one browser connection or one server process part
+of correctness.
 
-> **Status: active development.** greppa is a working design and reference implementation, not a finished product. The protocol, SDK, and ingestion pipeline are built out and unit-tested; the system is still being wired and exercised end-to-end, so expect rough edges and breaking changes.
+It separates three concerns that are usually collapsed into a chat request:
 
-**Where it is:** single-tenant personal knowledge API, with multi-tenant memory (R2 + Memvid) landing.  
-**Where it's going:** a multi-tenant AI memory protocol.
+- **Execution:** accepted work continues when the initiating request disappears.
+- **Delivery:** generated output is recorded before it is broadcast and can be
+  resumed from a sequence cursor.
+- **Memory:** retrieval begins inside a resolved user or organization scope,
+  backed by a memory file owned by that scope.
 
-Built with [Sumi](https://github.com/bethel-nz/sumi) (Bun + Hono), [memvid](https://github.com/Bethel-nz/memvid) for RAG, and [Groq](https://groq.com) for LLM inference.
+> **Status: active development.** Greppa is a working reference implementation,
+> not a finished hosted product. The protocol, browser and React SDKs, scoped
+> memory store, and Checkpoint lifecycle are implemented. End-to-end and
+> operational hardening are ongoing.
+
+The service is built with [Sumi](https://github.com/bethel-nz/sumi), Bun, Hono,
+QStash, Redis, Cloudflare R2, SQLite, sqlite-vec, FTS5, and Groq.
 
 ## Why greppa?
 
-Most chat APIs are synchronous request/response: you POST a message and pray the connection holds while the LLM thinks. If the tab refreshes, the network hiccups, or the user closes the laptop — the context is gone.
+Most chat APIs treat inference, delivery, and memory as one request. That is a
+convenient interface until the tab refreshes, a worker is retried, or two users
+must never retrieve from the same memory.
 
 greppa treats chat as an **async workflow**:
 
-1. **Enqueue** — POST your message to `/chat`. It returns immediately with a job ID.
-2. **Stream** — Subscribe to `/chat/stream` via SSE. If the connection drops, reconnect with `last-event-id` and resume exactly where you left off.
-3. **Remember** — Every session is HMAC-signed, scoped, and retrievable. Conversations survive browser refreshes, network failures, and tab closures.
+1. **Enqueue:** `POST /chat` accepts the turn and returns a message ID.
+2. **Record:** the worker writes sequenced events to a durable log before live
+   delivery.
+3. **Resume:** `/chat/stream` replays after `last-event-id`, then joins the live
+   tail without skipping or reordering events.
+4. **Remember:** the request resolves to an isolated memory scope before
+   retrieval begins.
 
-The assistant (Greppa) uses tool-use to decide whether to search your knowledge base, retrieve relevant context, and stream the answer — or just chat.
+Memory is not a shared vector index with a tenant filter attached at query time.
+Each scope owns a portable SQLite database containing documents, chunks, lexical
+and vector indexes, and embedding identity. Checkpoint hydrates that file from
+R2 on demand, gives readers immutable generations, gives writers private copies,
+and publishes changes with ETag compare-and-set.
 
 ## How it works
 
 1. **Ingest** — POST an article or upload a file to `/knowledge`
 2. **Chat** — POST to `/chat` and stream via `/chat/stream`
 3. **Search** — Greppa decides when to query the knowledge base using tool-use
+
+## Design notes
+
+- [`docs/architecture.md`](./docs/architecture.md) defines the delivery
+  contract, reconnect behavior, and execution boundaries.
+- [`docs/memory-architecture.md`](./docs/memory-architecture.md) follows a scope
+  through hydration, retrieval, mutation, conflict handling, and eviction.
+- [`docs/why-own-memory.md`](./docs/why-own-memory.md) documents the measurements
+  and trade-offs behind replacing the original memory engine.
 
 ## API
 
@@ -140,12 +170,18 @@ See [`.env.example`](.env.example) for the full list. The ones you need to run i
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis (event log + realtime) |
 | `QSTASH_TOKEN` | Upstash QStash (async chat workflow) |
 | `INTERNAL_API_KEY` | Worker-to-server auth |
-| `R2_*` | Cloudflare R2 for multi-tenant memory (see `.env.example`) |
-| `MEMVID_LOCAL_PATH` | Local path to the `.mv2` knowledge store |
+| `R2_*` | Cloudflare R2 credentials and scope-memory bucket |
+| `CHECKPOINT_CACHE_DIR` | Local directory for hydrated memory generations |
+| `CHECKPOINT_MAX_OPEN` | Maximum number of scopes retained locally |
+| `CHECKPOINT_MAX_CACHE_BYTES` | Byte budget for the local working set |
+| `EMBEDDING_PROVIDER` | `google`, `openrouter`, `openai-compatible`, or deterministic development embeddings |
 
 ## Deployment
 
-Requires a persistent filesystem for memvid — **not compatible with serverless platforms** (Vercel, Netlify, Cloudflare Workers).
+Greppa stores canonical scope files in R2 but opens them from a bounded local
+Checkpoint cache. The runtime therefore needs a persistent, SSD-backed
+filesystem. It is not designed for stateless serverless platforms unless that
+cache is mounted on durable storage.
 
 Recommended: any VPS or platform with persistent disk support (Railway, Render, Fly.io, DigitalOcean).
 
@@ -155,42 +191,36 @@ Recommended: any VPS or platform with persistent disk support (Railway, Render, 
 docker compose up -d
 ```
 
-The knowledge store is persisted in a Docker volume (`greppa-data`). Set required environment variables in a `.env` file before starting.
+The Checkpoint cache is persisted in a Docker volume (`greppa-data`). Set
+required environment variables in a `.env` file before starting.
 
 ## Current limitations
 
-greppa is a **single-tenant personal knowledge API** today, with multi-tenant memory (R2 + [memvid](https://github.com/Bethel-nz/memvid)) in progress. The architecture supports multi-tenancy (session isolation, scoped contexts, rate limits); the storage layer is what is still being brought up to it.
-
-- Good for personal use or single-user deployments today.
-- The protocol primitives (sessions, resumable streams, async workflows) are implemented and covered by unit tests; they are being hardened as the system is run end-to-end.
-- Not yet suitable for multi-user SaaS — the R2-backed isolation is unfinished.
+- A memory write republishes the scope's complete SQLite file. That is a
+  deliberate fit for bounded personal and team memory, not document-scale
+  storage.
+- The local cache is bounded by both scope count and bytes, but one scope larger
+  than the byte budget may temporarily exceed it while in use.
+- A conflicting write is re-run once against fresh state. Continued contention
+  surfaces backpressure instead of spinning indefinitely.
+- The protocol and memory primitives are implemented, but the hosted product
+  still needs broader production exercise and operational tooling.
 
 ## Roadmap
 
-### Now — v1 (Personal)
+- [x] Async chat execution with QStash
+- [x] Durable, resumable SSE delivery
+- [x] HMAC-signed session scopes
+- [x] Per-scope SQLite memory with hybrid retrieval
+- [x] R2 hydration and conditional publishing through Checkpoint
+- [x] Personal and organization memory boundaries
+- [ ] Export and import for portable scope files
+- [ ] Document parsing for PDF, Markdown, and HTML
+- [ ] Protocol versioning and compatibility fixtures
+- [ ] Production observability for memory hydration, conflicts, and retrieval
 
-_Implemented in code and unit-tested; being hardened as the system is exercised end-to-end._
-
-- [x] Async chat pipeline with QStash
-- [x] Resumable SSE streams with `last-event-id`
-- [x] HMAC-signed session management
-- [x] Knowledge ingestion + RAG tool-use
-- [x] Browser + React SDK
-- [x] Rate limiting (IP + session scoped)
-
-### Next — v1.5 (Power User)
-- [ ] Multiple knowledge bases per instance (namespace isolation in memvid)
-- [ ] Export/import knowledge bundles
-- [ ] Document parsing pipeline (PDF, Markdown, HTML)
-- [ ] Webhook integrations for knowledge ingestion
-
-### Future — v2 (Protocol)
-- [ ] **Multi-tenant storage adapter** — either contribute isolation to memvid or add a Postgres/pgvector backend
-- [ ] **Organization scoping** — teams, shared knowledge bases, permissions
-- [ ] **Protocol versioning** — the `GREPPA_PROTOCOL_VERSION` header already exists; formalize the contract
-- [ ] **Hosted offering** — greppa.cloud: we host the protocol, you bring the knowledge
-
-The long-term bet is that reliable AI chat — with memory, resumability, and tool-use — should be a protocol, not a product you rebuild from scratch every time.
+The long-term bet is that memory, delivery, and recovery should be reusable
+protocol concerns rather than behavior rebuilt inside every AI feature.
 
 ## Commands
 
