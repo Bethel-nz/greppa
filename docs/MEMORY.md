@@ -54,8 +54,8 @@ Five findings, all measured on `@memvid/sdk@2.0.159` in July 2026.
 that stayed empty. `stats()` reported `has_vec_index: true` with
 `effective_vec_dimension: null`, and a query for *"feline pet animal"* against
 *"the domestic cat is a small carnivorous mammal kept as a pet"* returned **zero
-hits**. Scope search had been keyword-only BM25 in production while presenting
-as semantic memory. One line would have fixed it on Memvid; the reasons we
+hits**. Scope search had been keyword-only BM25 for as long as the feature had
+existed, while presenting as semantic memory. One line would have fixed it on Memvid; the reasons we
 actually migrated are the four below.
 
 **File size grew with the square of the ingest count.** 350 notes of roughly
