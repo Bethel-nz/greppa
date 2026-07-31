@@ -12,6 +12,18 @@ It separates three concerns that are usually collapsed into a chat request:
 - **Memory:** retrieval begins inside a resolved user or organization scope,
   backed by a memory file owned by that scope.
 
+Two of those three are reusable, and it is worth being explicit about which:
+
+| layer | what it is | reusable |
+| --- | --- | --- |
+| Transport | A **protocol** — enqueue, durable log, resumable stream, versioned events. Specified in [PROTOCOL.md](./docs/PROTOCOL.md). | Yes |
+| **Checkpoint** | **Infrastructure** — serve a file from object storage into a bounded local cache, with immutable reads and compare-and-set writes. Its whole contract is `read(key, fn(localPath))`; it does not know what is in the file. | Yes |
+| Scope store | **greppa's memory product** — schema, chunking, hybrid retrieval, per-document ACL. Opinionated, and increasingly so. | No |
+
+The boundary is load-bearing: no product vocabulary enters `utils/checkpoint/`.
+That discipline is why replacing the memory engine in July 2026 required zero
+changes to it.
+
 > **Status: active development.** Greppa is a working reference implementation,
 > not a finished hosted product. The protocol, browser and React SDKs, scoped
 > memory store, and Checkpoint lifecycle are implemented. End-to-end and

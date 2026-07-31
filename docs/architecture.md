@@ -6,7 +6,7 @@
 
 Greppa is not a chatbot. It is a protocol that turns fragile synchronous LLM calls into a durable, observable, resumable message bus. The core insight: LLM inference should be asynchronous, recoverable, and observable — like a workflow, not a function call.
 
-This document describes the architecture as of the current codebase, the design principles that shaped it, and the technical decisions that enable its roadmap from single-tenant personal API to multi-tenant protocol.
+This document describes the architecture as of the current codebase, the design principles that shaped it, and the technical decisions behind it. Note which layers claim to be reusable and which are deliberately greppa-shaped — see Design Principle 5.
 
 ---
 
@@ -45,9 +45,17 @@ Conversations, rate limits, context windows, and knowledge scopes are all bound 
 
 The client should never wonder "is it working?" Each step of the generation pipeline emits typed cues: `scanning_input`, `building_context`, `thinking`, `searching_knowledge`, `generating`, `done`. The UI can show meaningful progress.
 
-### 5. Protocol-First, Product-Second
+### 5. Protocol Where It Is a Protocol
 
-The API contract, SDK, and session model are designed as a reusable protocol. The current implementation is a single-tenant personal API, but the primitives (session isolation, scoped contexts, rate limits, protocol versioning) are production-ready for multi-tenancy.
+Three layers, and only two of them are reusable. Being precise about which is which is deliberate — the alternative is infrastructure that quietly accretes product features until it is neither.
+
+| layer | what it is | reusable |
+| --- | --- | --- |
+| Transport — enqueue, durable log, resumable stream | A **protocol**: a client-server contract with a versioned event schema and a resume cursor. Specified in [PROTOCOL.md](./PROTOCOL.md); section 7 is a build-your-own checklist. | Yes |
+| [Checkpoint](./memory-architecture.md) | **Infrastructure**: serve a file from object storage into a bounded local cache, with immutable reads and compare-and-set writes. Knows nothing about memory, embeddings, scopes, or greppa. | Yes |
+| Scope store and memory services | **greppa's product**: schema, chunking, hybrid retrieval, per-document ACL, folders. Opinionated on purpose. | No |
+
+The rule that keeps this honest: **no product vocabulary enters `utils/checkpoint/`.** It deals in keys and local paths. The day `scope`, `folder`, or `tenant` appears in it, the reusable middle layer is gone — and that property is why replacing the memory engine cost zero changes there.
 
 ---
 
