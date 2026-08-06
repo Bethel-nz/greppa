@@ -16,6 +16,7 @@ const bodySchema = z.object({
     surrounding: z.string().optional().describe('Surrounding text context'),
   }).optional().describe('Optional context for RAG grounding'),
   orgId: z.string().optional().describe('Organization ID for multi-tenant knowledge access'),
+  workspaceId: z.string().min(1).optional().describe('Folder/workspace ID. Enables retrieval across the conversations and memories filed there.'),
 })
 
 const responseSchema = z.object({
@@ -30,7 +31,7 @@ export default createRoute({
     schema: { json: bodySchema },
     middleware: ['session-auth', 'rate-limit'],
     handler: async (c) => {
-      const { message, model, context, orgId } = c.req.valid('json')
+      const { message, model, context, orgId, workspaceId } = c.req.valid('json')
       const conversationId = c.get('conversationId')
       const isAnonymous = c.get('isAnonymous')
       const userId = c.get('userId')
@@ -47,7 +48,8 @@ export default createRoute({
         await redis.expire(`anon:msg_count:${conversationId}`, Math.floor(cfg.sessionTtlMs / 1000))
       }
 
-      const userMsg = { id: ulid(), role: 'user' as const, content: message, context, at: now }
+      const userMessageId = ulid()
+      const userMsg = { id: userMessageId, role: 'user' as const, content: message, context, at: now }
       await redis.zadd(`history:${conversationId}`, { score: now, member: JSON.stringify(userMsg) })
       await redis.expire(`history:${conversationId}`, Math.floor(cfg.sessionTtlMs / 1000))
 
@@ -62,11 +64,13 @@ export default createRoute({
       await triggerChatWorkflow({
         conversationId,
         messageId,
+        userMessageId,
         message,
         model,
         context,
         userId,
         orgId,
+        workspaceId,
       })
 
       return c.json({ messageId, channel: `msg:${messageId}` }, 202)

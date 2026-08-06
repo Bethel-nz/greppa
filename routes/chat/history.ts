@@ -35,10 +35,17 @@ export default createRoute({
         return c.json({ error: 'forbidden' }, 403)
       }
 
-      const raw = (await redis.zrange(`history:${sessionId}`, 0, -1)) as string[]
+      const raw = (await redis.zrange(`history:${sessionId}`, 0, -1)) as unknown[]
       const messages = raw
-        .map((r) => { try { return JSON.parse(r) } catch { return null } })
-        .filter(Boolean)
+        .map((value) => {
+          try {
+            const message = typeof value === 'string' ? JSON.parse(value) : value
+            return messageSchema.safeParse(message).data ?? null
+          } catch {
+            return null
+          }
+        })
+        .filter((message): message is z.infer<typeof messageSchema> => message !== null)
       const lastActivityAt = messages.length ? messages[messages.length - 1].at : 0
       return c.json({ sessionId, messages, lastActivityAt })
     },

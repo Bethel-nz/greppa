@@ -1,7 +1,7 @@
 import type { Database } from 'bun:sqlite'
 import { type EmbeddingProvider, EmbeddingIdentityError } from '../embedding/provider'
 
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 5
 
 export type ScopeIdentity = { model: string; dimension: number; schemaVersion: number }
 
@@ -32,10 +32,12 @@ export function createSchema(db: Database, provider: EmbeddingProvider): void {
     acl_visibility       text not null default 'public',
     acl_read_roles       text,
     acl_read_groups      text,
-    acl_read_principals  text
+    acl_read_principals  text,
+    folder_id            text
   )`)
 
   migrateDocumentsAcl(db)
+  createGraphSchema(db)
 
   // created_at / last_accessed / access_count drive temporal weighting. They
   // live on chunks rather than documents because retrieval and reinforcement
@@ -54,6 +56,8 @@ export function createSchema(db: Database, provider: EmbeddingProvider): void {
     access_count  integer not null default 0
   )`)
   db.run('create index if not exists chunks_by_document on chunks(document_id)')
+  // Folder-scoped retrieval filters on this before the ACL predicate runs.
+  db.run('create index if not exists documents_by_folder on documents(folder_id)')
   db.run('create index if not exists chunks_by_recency on chunks(last_accessed, created_at)')
 
   migrateChunksTemporal(db)
@@ -69,6 +73,33 @@ export function createSchema(db: Database, provider: EmbeddingProvider): void {
   )`)
 
   writeIdentity(db, provider)
+}
+
+/**
+ * Relationships live beside the memory documents they describe. A node is a
+ * stable, human-named entity and an edge always retains the document that
+ * supplied it as provenance. This keeps graph context scoped to the same
+ * SQLite file as the memories it can enrich.
+ */
+function createGraphSchema(db: Database): void {
+  db.run(`create table if not exists memory_nodes(
+    id          text primary key,
+    label       text not null,
+    created_at  integer not null
+  )`)
+  db.run(`create table if not exists memory_edges(
+    id             text primary key,
+    source_node_id text not null references memory_nodes(id) on delete cascade,
+    target_node_id text not null references memory_nodes(id) on delete cascade,
+    relation       text not null,
+    weight         real not null default 1,
+    document_id    text not null references documents(id) on delete cascade,
+    created_at     integer not null,
+    unique(source_node_id, target_node_id, relation, document_id)
+  )`)
+  db.run('create index if not exists memory_edges_by_source on memory_edges(source_node_id)')
+  db.run('create index if not exists memory_edges_by_target on memory_edges(target_node_id)')
+  db.run('create index if not exists memory_edges_by_document on memory_edges(document_id)')
 }
 
 /**
@@ -92,7 +123,7 @@ function migrateChunksTemporal(db: Database): void {
 }
 
 /**
- * Add the v2 ACL columns to a v1 `documents` table. Files written before the
+ * Add the ACL and folder columns to an older `documents` table. Files written before the
  * ACL port default to `public` visibility, which preserves their existing
  * behaviour: nothing was filtering them before either.
  */
@@ -106,6 +137,7 @@ function migrateDocumentsAcl(db: Database): void {
     ['acl_read_roles', 'text'],
     ['acl_read_groups', 'text'],
     ['acl_read_principals', 'text'],
+    ['folder_id', 'text'],
   ]
   for (const [name, type] of columns) {
     if (!existing.has(name)) db.run(`alter table documents add column ${name} ${type}`)

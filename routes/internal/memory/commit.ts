@@ -15,7 +15,7 @@ const commitSchema = z.object({
   documentId: z.string().min(1),
   title: z.string().min(1),
   sourceType: z.enum(['note', 'chat', 'document', 'webpage', 'agent_event']),
-  mode: z.enum(['text', 'native-file']).default('text'),
+  mode: z.literal('text').default('text'),
   text: z.string().optional(),
   r2Key: z.string().optional(),
   sourceUrl: z.string().optional(),
@@ -47,12 +47,6 @@ export default createRoute({
 
       if (body.mode === 'text' && !body.text) {
         return c.json({ error: 'text is required for mode "text"' }, 400)
-      }
-
-      // Native-file ingestion (download from R2 + parse) is not implemented yet.
-      // Fail loudly rather than indexing placeholder text into ACL-scoped memory.
-      if (body.mode === 'native-file') {
-        return c.json({ error: 'native-file ingestion not implemented' }, 501)
       }
 
       const result = await enqueueMemoryWrite(async () => {
@@ -111,7 +105,6 @@ export default createRoute({
         400: { description: 'Invalid request body' },
         401: { description: 'Invalid internal key' },
         403: { description: 'Membership verification failed' },
-        501: { description: 'Mode not implemented' },
       },
     },
   },

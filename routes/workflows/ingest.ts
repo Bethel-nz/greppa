@@ -4,6 +4,7 @@ import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { r2, R2_BUCKET } from '~/lib/memory/r2'
 import { parseText } from '~/lib/knowledge/parsers/text.parser'
 import { parseHtml } from '~/lib/knowledge/parsers/html.parser'
+import { parseAnyDoc } from '~/lib/knowledge/parsers/anydoc.parser'
 import { resolveIngestionStrategy } from '~/lib/knowledge/ingestion/ingestion-router'
 import { updateJobProgress, getIngestionJob } from '~/lib/knowledge/services/progress.service'
 import { drizzle, schema } from '~/lib/db'
@@ -84,7 +85,7 @@ const workflowHandler = serve(async (workflow) => {
     })
 
     // Step 3: Route and parse
-    const strategy = resolveIngestionStrategy(contentType)
+    const strategy = resolveIngestionStrategy(contentType, fileName)
 
     if (strategy === 'unsupported') {
       await updateJobProgress({
@@ -127,19 +128,21 @@ const workflowHandler = serve(async (workflow) => {
         text: parsed.text,
         sourceUrl: r2Key,
       }
-    } else {
-      // native-file (PDF, DOCX, image, audio, video)
+    } else if (strategy === 'anydoc') {
+      const parsed = await parseAnyDoc({ buffer: fileBuffer, contentType, fileName })
       commitPayload = {
         jobId,
         orgId,
         userId,
         documentId,
-        title,
+        title: parsed.title ?? title,
         sourceType: 'document',
-        mode: 'native-file',
-        r2Key,
+        mode: 'text',
+        text: parsed.text,
         sourceUrl: r2Key,
       }
+    } else {
+      throw new Error(`No parser configured for strategy: ${strategy}`)
     }
 
     await updateJobProgress({

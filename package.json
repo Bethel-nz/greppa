@@ -23,6 +23,7 @@
     "@bethel-nz/sumi": "1.3.1",
     "@better-auth/api-key": "^1.6.11",
     "@better-auth/drizzle-adapter": "^1.6.11",
+    "@firecrawl/anydoc": "^0.1.6",
     "@hono/zod-validator": "^0.7.0",
     "@scalar/hono-api-reference": "^0.9.13",
     "@types/bun": "^1.3.13",

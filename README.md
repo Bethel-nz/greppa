@@ -50,15 +50,23 @@ greppa treats chat as an **async workflow**:
 
 Memory is not a shared vector index with a tenant filter attached at query time.
 Each scope owns a portable SQLite database containing documents, chunks, lexical
-and vector indexes, and embedding identity. Checkpoint hydrates that file from
-R2 on demand, gives readers immutable generations, gives writers private copies,
-and publishes changes with ETag compare-and-set.
+and vector indexes, a small provenance-backed relationship graph, and embedding
+identity. Checkpoint hydrates that file from R2 on demand, gives readers
+immutable generations, gives writers private copies, and publishes changes with
+ETag compare-and-set.
 
 ## How it works
 
-1. **Ingest** — POST an article or upload a file to `/knowledge`
-2. **Chat** — POST to `/chat` and stream via `/chat/stream`
-3. **Search** — Greppa decides when to query the knowledge base using tool-use
+1. **Ingest** — POST an article or upload a file to `/knowledge`. Office files,
+   PDFs, spreadsheets, EPUBs, and CSVs are converted to Markdown before chunking.
+2. **Chat** — POST to `/chat` and stream via `/chat/stream`.
+3. **Remember** — the agent can persist a fact with explicit entity edges, then
+   ask for the relationships around a person, project, or decision later.
+4. **Search** — Greppa decides when to query the knowledge base using tool-use.
+   A conversation with a `workspaceId` gets an additional, folder-scoped search
+   tool. Completed workspace exchanges are archived into that folder so the
+   agent can recall a different conversation without searching the user's whole
+   personal memory.
 
 ## Design notes
 
@@ -224,10 +232,12 @@ required environment variables in a `.env` file before starting.
 - [x] Durable, resumable SSE delivery
 - [x] HMAC-signed session scopes
 - [x] Per-scope SQLite memory with hybrid retrieval
+- [x] Provenance-backed graph edges in scoped memory
+- [x] Workspace-scoped retrieval across archived conversations
 - [x] R2 hydration and conditional publishing through Checkpoint
 - [x] Personal and organization memory boundaries
 - [ ] Export and import for portable scope files
-- [ ] Document parsing for PDF, Markdown, and HTML
+- [x] Document parsing for PDF, office files, Markdown, HTML, and CSV
 - [ ] Protocol versioning and compatibility fixtures
 - [ ] Production observability for memory hydration, conflicts, and retrieval
 

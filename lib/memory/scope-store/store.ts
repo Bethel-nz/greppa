@@ -1,4 +1,5 @@
 import type { Database } from 'bun:sqlite'
+import { createHash } from 'node:crypto'
 import type { EmbeddingProvider } from '../embedding/provider'
 import { openSqlite } from '../sqlite'
 import { reciprocalRankFusion } from './fusion'
@@ -16,6 +17,20 @@ export type ChunkInput = {
   modality?: 'text' | 'image' | 'text_image'
   assetSha256?: string
   assetMime?: string
+}
+
+/** A relationship the agent extracted while writing a memory. */
+export type MemoryEdgeInput = {
+  source: string
+  target: string
+  relation: string
+  weight?: number
+}
+
+export type MemoryEdge = MemoryEdgeInput & {
+  documentId: string
+  documentTitle: string
+  createdAt: number
 }
 
 /**
@@ -47,6 +62,9 @@ export type InsertDocumentInput = {
   createdBy: string
   meta?: Record<string, unknown>
   acl?: DocumentAcl
+  /** Folder this document belongs to. null/undefined = unfiled. */
+  folderId?: string | null
+  edges?: MemoryEdgeInput[]
   chunks: ChunkInput[]
 }
 
@@ -75,6 +93,11 @@ export function openScopeStore(
     const existing = readIdentity(db)
     if (existing) {
       assertIdentity(db, opts.provider)
+      // Existing files still need additive migrations. Identity validation only
+      // protects vector compatibility; it does not create newly introduced
+      // tables such as the memory graph. Run createSchema on the next writable
+      // open so migrations remain lazy and local to the scope that needs them.
+      if (!opts.readonly) createSchema(db, opts.provider)
     } else if (!opts.readonly) {
       createSchema(db, opts.provider)
     }
@@ -131,11 +154,18 @@ export function insertDocument(store: ScopeStore, input: InsertDocumentInput): s
   const { db } = store
   const documentId = input.id ?? crypto.randomUUID()
 
+  // Callers may provide a durable event/message ID. Treat a replay of that
+  // event as already committed instead of duplicating its chunks and edges.
+  if (input.id && db.prepare('select id from documents where id = ?').get(documentId)) {
+    return documentId
+  }
+
   const insertDoc = db.prepare(
     `insert into documents(
        id,title,source_type,source_url,created_by,created_at,meta_json,
-       acl_tenant_id,acl_visibility,acl_read_roles,acl_read_groups,acl_read_principals
-     ) values (?,?,?,?,?,?,?,?,?,?,?,?)`,
+       acl_tenant_id,acl_visibility,acl_read_roles,acl_read_groups,acl_read_principals,
+       folder_id
+     ) values (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   )
   const insertChunk = db.prepare(
     `insert into chunks(document_id,ordinal,text,modality,asset_sha256,asset_mime,created_at,access_count)
@@ -160,6 +190,7 @@ export function insertDocument(store: ScopeStore, input: InsertDocumentInput): s
       acl?.readRoles ? JSON.stringify(normalizeAcl(acl.readRoles)) : null,
       acl?.readGroups ? JSON.stringify(normalizeAcl(acl.readGroups)) : null,
       acl?.readPrincipals ? JSON.stringify(normalizeAcl(acl.readPrincipals)) : null,
+      input.folderId ?? null,
     )
     for (let i = 0; i < input.chunks.length; i++) {
       const c = input.chunks[i]!
@@ -183,10 +214,169 @@ export function insertDocument(store: ScopeStore, input: InsertDocumentInput): s
       if (c.text.trim()) insertFts.run(chunkId, c.text)
       insertVec.run(chunkId, toBlob(c.embedding))
     }
+
+    insertMemoryEdges(db, documentId, input.edges ?? [])
   })
 
   run()
   return documentId
+}
+
+function stableId(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function normalizeEntity(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase()
+}
+
+function insertMemoryEdges(db: Database, documentId: string, edges: MemoryEdgeInput[]): void {
+  if (edges.length === 0) return
+
+  const insertNode = db.prepare(
+    'insert into memory_nodes(id,label,created_at) values (?,?,?) on conflict(id) do update set label = excluded.label',
+  )
+  const insertEdge = db.prepare(
+    `insert into memory_edges(
+       id,source_node_id,target_node_id,relation,weight,document_id,created_at
+     ) values (?,?,?,?,?,?,?) on conflict(source_node_id,target_node_id,relation,document_id) do nothing`,
+  )
+  const now = Date.now()
+
+  for (const edge of edges) {
+    const source = edge.source.trim()
+    const target = edge.target.trim()
+    const relation = edge.relation.trim()
+    if (!source || !target || !relation) {
+      throw new Error('[scope-store] graph edges need a source, target, and relation')
+    }
+    if (edge.weight !== undefined && (!Number.isFinite(edge.weight) || edge.weight <= 0)) {
+      throw new Error('[scope-store] edge weight must be a positive finite number')
+    }
+
+    const sourceId = `node:${stableId(normalizeEntity(source))}`
+    const targetId = `node:${stableId(normalizeEntity(target))}`
+    insertNode.run(sourceId, source, now)
+    insertNode.run(targetId, target, now)
+    insertEdge.run(
+      `edge:${stableId(`${documentId}\n${sourceId}\n${relation.toLocaleLowerCase()}\n${targetId}`)}`,
+      sourceId,
+      targetId,
+      relation,
+      edge.weight ?? 1,
+      documentId,
+      now,
+    )
+  }
+}
+
+/**
+ * Reads the relationships an agent may use as compact supporting context.
+ * `documentIds` keeps RAG grounded: a search only sees edges backed by the
+ * documents it already retrieved.
+ */
+export function listMemoryEdges(
+  store: ScopeStore,
+  options: {
+    entity?: string
+    relation?: string
+    documentIds?: string[]
+    folderId?: string | null
+    limit?: number
+  } = {},
+): MemoryEdge[] {
+  // A scope can be opened read-only before its first post-upgrade write. In
+  // that case it may still be a pre-graph file; no relationships is the
+  // truthful answer, and avoids turning ordinary RAG reads into migration
+  // failures.
+  if (!store.db.prepare("select 1 from sqlite_master where type = 'table' and name = 'memory_edges'").get()) {
+    return []
+  }
+
+  const clauses: string[] = []
+  const params: string[] = []
+
+  if (options.entity?.trim()) {
+    const nodeId = `node:${stableId(normalizeEntity(options.entity))}`
+    clauses.push('(e.source_node_id = ? or e.target_node_id = ?)')
+    params.push(nodeId, nodeId)
+  }
+  if (options.relation?.trim()) {
+    clauses.push('lower(e.relation) = lower(?)')
+    params.push(options.relation.trim())
+  }
+  if (options.folderId !== undefined) {
+    clauses.push(options.folderId === null ? 'd.folder_id is null' : 'd.folder_id = ?')
+    if (options.folderId !== null) params.push(options.folderId)
+  }
+  if (options.documentIds?.length) {
+    clauses.push(`e.document_id in (${options.documentIds.map(() => '?').join(',')})`)
+    params.push(...options.documentIds)
+  }
+
+  const where = clauses.length ? `where ${clauses.join(' and ')}` : ''
+  const limit = Math.min(Math.max(options.limit ?? 25, 1), 100)
+  return store.db
+    .prepare(
+      `select source.label as source, target.label as target, e.relation as relation,
+              e.weight as weight, e.document_id as documentId, d.title as documentTitle,
+              e.created_at as createdAt
+         from memory_edges e
+         join memory_nodes source on source.id = e.source_node_id
+         join memory_nodes target on target.id = e.target_node_id
+         join documents d on d.id = e.document_id
+         ${where}
+         order by e.created_at desc
+         limit ?`,
+    )
+    .all(...params, limit) as MemoryEdge[]
+}
+
+/**
+ * Move documents into a folder, adopting the folder's ACL.
+ *
+ * This is the whole "move a chat into a folder" operation: no data is copied
+ * and nothing is re-indexed, because the documents already live in the shared
+ * scope file. Only their label and their visibility change, in one transaction.
+ *
+ * Pass `folderId: null` to move documents back out of any folder. The ACL still
+ * applies — unfiled does not mean unrestricted.
+ */
+export function moveToFolder(
+  store: ScopeStore,
+  documentIds: string[],
+  folderId: string | null,
+  acl?: DocumentAcl,
+): number {
+  if (documentIds.length === 0) return 0
+  const { db } = store
+  const placeholders = documentIds.map(() => '?').join(',')
+
+  const run = db.transaction(() => {
+    if (acl) {
+      db.prepare(
+        `update documents set folder_id = ?, acl_tenant_id = ?, acl_visibility = ?,
+                acl_read_roles = ?, acl_read_groups = ?, acl_read_principals = ?
+           where id in (${placeholders})`,
+      ).run(
+        folderId,
+        acl.tenantId ?? null,
+        acl.visibility ?? 'public',
+        acl.readRoles ? JSON.stringify(normalizeAcl(acl.readRoles)) : null,
+        acl.readGroups ? JSON.stringify(normalizeAcl(acl.readGroups)) : null,
+        acl.readPrincipals ? JSON.stringify(normalizeAcl(acl.readPrincipals)) : null,
+        ...documentIds,
+      )
+    } else {
+      db.prepare(`update documents set folder_id = ? where id in (${placeholders})`).run(
+        folderId,
+        ...documentIds,
+      )
+    }
+  })
+
+  run()
+  return documentIds.length
 }
 
 /**
@@ -228,6 +418,20 @@ export function hybridSearch(
   limit: number,
   acl?: AclContext,
   decay: DecayConfig = DECAY_OFF,
+  /**
+   * Restrict retrieval to one folder. This is a SCOPE filter, not a permission
+   * check — the two answer different questions and both must hold.
+   *
+   * The ACL predicate is permissive by design: any one branch (public, named
+   * principal, role, group) admits a document. So a folder query relying on ACL
+   * alone would still match every public document in the file and the reader's
+   * own private chats. Passing a folder id here ANDs an exact match on top.
+   *
+   *   string      -> only documents in that folder
+   *   null        -> only unfiled documents
+   *   undefined   -> no folder restriction
+   */
+  folderId?: string | null,
 ): SearchHit[] {
   const { db } = store
   if (queryVector.length !== store.provider.dimension) {
@@ -238,7 +442,8 @@ export function hybridSearch(
 
   // ACL filtering happens after candidate retrieval, so over-fetch when it is
   // active or an enforced query could under-fill its limit.
-  const depth = acl ? CANDIDATE_DEPTH * 4 : CANDIDATE_DEPTH
+  const scoped = acl !== undefined || folderId !== undefined
+  const depth = scoped ? CANDIDATE_DEPTH * 4 : CANDIDATE_DEPTH
 
   const vecIds = (
     db
@@ -267,11 +472,22 @@ export function hybridSearch(
   // are removed below, and truncating first would silently shorten the result.
   // With decay on, fusion must not truncate first: an older-but-stronger hit
   // can legitimately fall below a fresher one only after weighting.
-  const fused = reciprocalRankFusion([vecIds, ftsIds], acl || decay.enabled ? {} : { limit })
+  const fused = reciprocalRankFusion([vecIds, ftsIds], scoped || decay.enabled ? {} : { limit })
   if (fused.length === 0) return []
 
   const placeholders = fused.map(() => '?').join(',')
-  const where = acl ? aclPredicate(acl) : null
+  const clauses: string[] = []
+  const params: Array<string | number> = []
+  if (folderId !== undefined) {
+    clauses.push(folderId === null ? 'd.folder_id is null' : 'd.folder_id = ?')
+    if (folderId !== null) params.push(folderId)
+  }
+  if (acl) {
+    const p = aclPredicate(acl)
+    clauses.push(p.sql)
+    params.push(...p.params)
+  }
+  const where = clauses.length ? clauses.join(' and ') : null
   const rows = db
     .prepare(
       `select c.id as chunkId, c.document_id as documentId, c.text as text, c.modality as modality,
@@ -279,9 +495,9 @@ export function hybridSearch(
               c.last_accessed as lastAccessed, d.title as title,
               d.source_type as sourceType, d.source_url as sourceUrl
          from chunks c join documents d on d.id = c.document_id
-        where c.id in (${placeholders})${where ? ` and ${where.sql}` : ''}`,
+        where c.id in (${placeholders})${where ? ` and ${where}` : ''}`,
     )
-    .all(...fused.map((f) => f.id), ...(where?.params ?? [])) as Array<
+    .all(...fused.map((f) => f.id), ...params) as Array<
     Omit<SearchHit, 'score'> & { createdAt: number; lastAccessed: number | null }
   >
 

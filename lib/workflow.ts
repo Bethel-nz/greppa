@@ -7,7 +7,10 @@ export function getWorkflowClient(): Client {
     if (!process.env.QSTASH_TOKEN) {
       throw new Error('QSTASH_TOKEN is required for Upstash Workflow')
     }
-    _client = new Client({ token: process.env.QSTASH_TOKEN })
+    _client = new Client({
+      token: process.env.QSTASH_TOKEN,
+      baseUrl: process.env.QSTASH_URL,
+    })
   }
   return _client
 }
@@ -15,11 +18,13 @@ export function getWorkflowClient(): Client {
 export async function triggerChatWorkflow(payload: {
   conversationId: string
   messageId: string
+  userMessageId: string
   message: string
   model: string
   context?: { selection?: string; source?: string; title?: string; surrounding?: string }
   userId?: string | null
   orgId?: string | null
+  workspaceId?: string
 }): Promise<void> {
   const base = process.env.GREPPA_PUBLIC_URL
   if (!base) throw new Error('GREPPA_PUBLIC_URL is required (full URL of this server)')

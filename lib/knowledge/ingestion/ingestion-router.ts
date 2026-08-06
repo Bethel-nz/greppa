@@ -1,22 +1,38 @@
 export type IngestionStrategy =
   | 'custom-text'
   | 'custom-html'
-  | 'native-file'
+  | 'anydoc'
   | 'unsupported'
 
-export function resolveIngestionStrategy(contentType: string): IngestionStrategy {
-  if (contentType === 'text/plain') return 'custom-text'
-  if (contentType === 'text/markdown') return 'custom-text'
-  if (contentType === 'text/html') return 'custom-html'
+const ANYDOC_MIME_TYPES = new Set([
+  'application/pdf',
+  'text/csv',
+  'application/rtf',
+  'text/rtf',
+  'application/epub+zip',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.oasis.opendocument.presentation',
+])
 
-  if (contentType === 'application/pdf') return 'native-file'
-  if (contentType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
-    return 'native-file'
-  }
+const ANYDOC_EXTENSIONS = new Set([
+  'doc', 'docx', 'docm', 'pdf', 'ppt', 'pptx', 'pptm', 'pps', 'ppsx', 'ppsm',
+  'pot', 'odt', 'ods', 'odp', 'rtf', 'epub', 'xls', 'xlsx', 'xlsm', 'xlsb', 'csv',
+])
 
-  if (contentType.startsWith('image/')) return 'native-file'
-  if (contentType.startsWith('audio/')) return 'native-file'
-  if (contentType.startsWith('video/')) return 'native-file'
+export function resolveIngestionStrategy(contentType: string, fileName?: string): IngestionStrategy {
+  const mediaType = contentType.split(';', 1)[0]?.trim().toLowerCase() ?? ''
+  if (mediaType === 'text/plain') return 'custom-text'
+  if (mediaType === 'text/markdown') return 'custom-text'
+  if (mediaType === 'text/html') return 'custom-html'
+
+  if (ANYDOC_MIME_TYPES.has(mediaType)) return 'anydoc'
+
+  const extension = fileName?.split('.').pop()?.toLowerCase()
+  if (extension && ANYDOC_EXTENSIONS.has(extension)) return 'anydoc'
 
   return 'unsupported'
 }
