@@ -1,13 +1,13 @@
 import { createRoute } from '@bethel-nz/sumi/router'
 import { auth } from '~/lib/auth'
 
+import { requestErrors } from '../../../lib/errors'
 export default createRoute({
-  // Revoke one of the caller's API keys.
   delete: {
     middleware: ['user-auth'],
     handler: async (c) => {
       const keyId = c.req.param('keyId')
-      if (!keyId) return c.json({ error: 'keyId required' }, 400)
+      if (!keyId) throw requestErrors.FIELD_REQUIRED({ field: 'keyId' })
 
       await auth.api.deleteApiKey({
         body: { keyId },

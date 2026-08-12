@@ -25,7 +25,6 @@ function buildRealtime() {
   return new Realtime({
     schema: realtimeSchema,
     redis,
-    // Live-tail transport only; durable replay is the msg:<id>:events ZSET.
     history: { expireAfterSecs: 60 },
   })
 }
@@ -35,7 +34,6 @@ export function getRealtime() {
   return _realtime
 }
 
-// Lazy proxy so importers don't trigger Redis client construction at module load.
 export const realtime = new Proxy({} as ReturnType<typeof buildRealtime>, {
   get(_t, prop) {
     return (getRealtime() as any)[prop]

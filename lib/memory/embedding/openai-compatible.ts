@@ -1,26 +1,10 @@
 import { type EmbeddingProvider, type EmbedKind, l2normalize } from './provider'
 
-/**
- * Adapter for any endpoint speaking the OpenAI `/v1/embeddings` shape:
- * `{ model, input: string[] }` in, `{ data: [{ embedding: number[] }] }` out.
- *
- * That covers OpenAI itself, NVIDIA NIM (https://integrate.api.nvidia.com/v1),
- * and most self-hosted inference servers. It deliberately does NOT cover
- * OpenRouter: OpenRouter is a chat/completion router and serves no embedding
- * models at all (verified 2026-07-25 — its /api/v1/models returns 345 models,
- * none with an embedding output modality).
- *
- * Nemotron Embed VL 1B v2 is reachable this way through NVIDIA NIM:
- *   baseUrl "https://integrate.api.nvidia.com/v1"
- *   model   "nvidia/llama-nemotron-embed-vl-1b-v2"
- *   dimension 2048
- */
 export type OpenAICompatibleConfig = {
   apiKey: string
   baseUrl: string
   model: string
   dimension: number
-  /** Sent as `input_type`; NIM and Nemotron use it for asymmetric retrieval. */
   sendInputType?: boolean
   maxBatchSize?: number
 }
@@ -52,8 +36,6 @@ export function createOpenAICompatibleProvider(cfg: OpenAICompatibleConfig): Emb
       if (d.embedding.length !== cfg.dimension) {
         throw new Error(`[embedding] expected dimension ${cfg.dimension}, got ${d.embedding.length}`)
       }
-      // Normalize regardless of what upstream claims: the store compares with
-      // dot product, and an unnormalized vector is silently wrong, not an error.
       return l2normalize(Float32Array.from(d.embedding))
     })
   }

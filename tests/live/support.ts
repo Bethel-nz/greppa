@@ -1,10 +1,3 @@
-/**
- * Shared helpers for the opt-in live Checkpoint suite.
- *
- * Everything here talks to real Cloudflare R2 and builds real scope-store
- * SQLite files. Nothing in this directory runs unless CHECKPOINT_LIVE_R2=1, so
- * the ordinary `bun test` run never needs cloud credentials.
- */
 import { existsSync, readFileSync } from 'node:fs'
 import { readdir, stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
@@ -14,16 +7,6 @@ import { createDeterministicProvider } from '~/lib/memory/embedding/deterministi
 import type { EmbeddingProvider } from '~/lib/memory/embedding/provider'
 import { insertDocument, openScopeStore, type ScopeStore } from '~/lib/memory/scope-store/store'
 
-/**
- * `bun test` sets NODE_ENV=test, and Bun deliberately skips `.env.local` in
- * that mode. The live R2 credentials live there, so without this the suite
- * inherits whatever stale values `.env` happens to hold and fails with an
- * opaque AccessDenied instead of a missing-credential error.
- *
- * Load it explicitly and let it win, reproducing what `bun run` sees. Values
- * here override the process environment on purpose: that is exactly the
- * precedence Bun applies outside test mode.
- */
 function loadEnvLocal(): void {
   const path = resolve(import.meta.dir, '../../.env.local')
   if (!existsSync(path)) return
@@ -53,24 +36,15 @@ export function liveStorage(): R2Storage {
   return R2Storage.fromEnv()
 }
 
-/**
- * Every live run gets its own R2 prefix so parallel runs never collide and a
- * crashed run leaves an obviously-disposable island of objects behind.
- */
 export function runPrefix(label: string): string {
   return `_live/${label}/${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}/`
 }
 
-/** Delete every object under a prefix. Returns how many were removed. */
 export async function purgePrefix(storage: StorageBackend, prefix: string): Promise<number> {
   const objects = await storage.list(prefix)
   for (const o of objects) await storage.delete(o.key)
   return objects.length
 }
-
-// ---------------------------------------------------------------------------
-// process metrics
-// ---------------------------------------------------------------------------
 
 export type MemorySample = {
   rssBytes: number
@@ -79,11 +53,6 @@ export type MemorySample = {
   externalBytes: number
 }
 
-/**
- * Sample process memory after a forced GC so heap numbers reflect retained
- * bytes rather than uncollected garbage. `Bun.gc` is Bun-only; under Node the
- * sample is still taken, just without the collection.
- */
 export function sampleMemory(): MemorySample {
   const bun = (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun
   bun?.gc?.(true)
@@ -95,10 +64,6 @@ export function sampleMemory(): MemorySample {
     externalBytes: m.external ?? 0,
   }
 }
-
-// ---------------------------------------------------------------------------
-// on-disk accounting
-// ---------------------------------------------------------------------------
 
 export type DiskKind = 'generation' | 'working' | 'hydrating' | 'other'
 
@@ -115,11 +80,6 @@ function classify(name: string): DiskKind {
   return 'other'
 }
 
-/**
- * Walk a cache directory and total the bytes it holds, grouped by the
- * generation kind encoded in each filename. Uses stat() only — a 100 MiB
- * a large scope database is never read into the JS heap to find out how big it is.
- */
 export async function diskUsage(root: string): Promise<DiskUsage> {
   const usage: DiskUsage = {
     totalBytes: 0,
@@ -137,7 +97,7 @@ export async function diskUsage(root: string): Promise<DiskUsage> {
     try {
       entries = await readdir(dir, { withFileTypes: true })
     } catch {
-      return // the cache dir may not exist yet
+      return 
     }
     for (const e of entries) {
       const p = join(dir, e.name)
@@ -146,7 +106,7 @@ export async function diskUsage(root: string): Promise<DiskUsage> {
         continue
       }
       const s = await stat(p).catch(() => null)
-      if (!s) continue // raced with an eviction; not an error
+      if (!s) continue 
       const kind = classify(e.name)
       usage.totalBytes += s.size
       usage.fileCount++
@@ -159,10 +119,6 @@ export async function diskUsage(root: string): Promise<DiskUsage> {
   return usage
 }
 
-// ---------------------------------------------------------------------------
-// representative scope-store corpus
-// ---------------------------------------------------------------------------
-
 const VOCAB =
   `alpha beta gamma delta epsilon zeta eta theta iota kappa lambda sigma tau
    deploy rollback latency throughput checkpoint hydration generation etag bucket
@@ -171,10 +127,6 @@ const VOCAB =
     .split(/\s+/)
     .filter(Boolean)
 
-/**
- * Deterministic pseudo-natural text. Seeded by frame index so two runs with the
- * same parameters build byte-identical content and the benchmark is repeatable.
- */
 export function frameText(index: number, words: number): string {
   let seed = (index * 2_654_435_761) >>> 0
   const out: string[] = []
@@ -185,15 +137,12 @@ export function frameText(index: number, words: number): string {
   return out.join(' ')
 }
 
-/** Embedding provider used to build benchmark corpora: offline and free. */
 export const benchProvider = (dimension = 1536): EmbeddingProvider => createDeterministicProvider(dimension)
 
-/** Open a scope store read-only, mirroring searchScopedMemory(). */
 export function openCorpusReadOnly(localPath: string, provider: EmbeddingProvider): ScopeStore {
   return openScopeStore(localPath, { provider, create: false, readonly: true })
 }
 
-/** Open a working generation for mutation, mirroring addScopedMemory(). */
 export function openCorpusForWrite(localPath: string, exists: boolean, provider: EmbeddingProvider): ScopeStore {
   return openScopeStore(localPath, { provider, create: !exists })
 }
@@ -211,21 +160,11 @@ export type BuildCorpusOptions = {
   path: string
   targetBytes: number
   wordsPerFrame?: number
-  /** Embedding width; dominates file size at 4 bytes per dimension. */
   dimension?: number
-  /** Documents inserted between size checks. */
   batchSize?: number
   onProgress?: (p: { documents: number; bytes: number; elapsedMs: number }) => void
 }
 
-/**
- * Build a real scope-store SQLite file and keep appending documents until it
- * reaches targetBytes. This is the benchmark's fixture: an actual sqlite-vec
- * index plus an actual FTS5 index over actual text, not a random byte buffer.
- *
- * Unlike the Memvid corpus this replaced, size grows linearly with document
- * count, so bytes-per-document is a stable, meaningful figure.
- */
 export async function buildCorpus(opts: BuildCorpusOptions): Promise<CorpusResult> {
   const { path, targetBytes } = opts
   const wordsPerFrame = opts.wordsPerFrame ?? 320
@@ -266,15 +205,10 @@ export async function buildCorpus(opts: BuildCorpusOptions): Promise<CorpusResul
   return { path, bytes, documents, buildMs, wordsPerFrame, dimension }
 }
 
-// ---------------------------------------------------------------------------
-// formatting
-// ---------------------------------------------------------------------------
-
 export const mib = (bytes: number): string => (bytes / MiB).toFixed(2)
 export const ms = (v: number): string => v.toFixed(0)
 export const secs = (v: number): string => (v / 1000).toFixed(2)
 
-/** MiB/s for a transfer of `bytes` that took `elapsedMs`. */
 export const rate = (bytes: number, elapsedMs: number): string =>
   elapsedMs <= 0 ? 'n/a' : (bytes / MiB / (elapsedMs / 1000)).toFixed(1)
 

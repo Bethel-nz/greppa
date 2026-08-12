@@ -5,12 +5,6 @@ import type { EmbeddingProvider } from './provider'
 
 const norm = (v: Float32Array) => Math.sqrt(v.reduce((a, x) => a + x * x, 0))
 
-/**
- * Every provider must satisfy this contract. Gemini returns unnormalized
- * vectors below 3072 dimensions, so the adapter — not the caller — is
- * responsible for normalizing. An unnormalized vector reaching the index
- * produces silently wrong distances rather than an error.
- */
 export function assertProviderContract(name: string, make: () => EmbeddingProvider): void {
   describe(`provider contract: ${name}`, () => {
     test('declares a non-empty id, positive dimension and batch size', () => {

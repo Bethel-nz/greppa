@@ -1,17 +1,5 @@
 import { type EmbeddingProvider, type EmbedKind, l2normalize } from './provider'
 
-/**
- * Gemini Embedding. Matryoshka-trained, so the 3072-dimension output can be
- * truncated to Google's recommended 1536 or 768 without meaningful loss.
- *
- * Only the full 3072-dimension output is pre-normalized; every smaller size is
- * returned unnormalized. The store compares with dot product, so an
- * unnormalized vector produces silently wrong distances rather than an error.
- * l2normalize() below is therefore load-bearing, not defensive.
- *
- * UNVERIFIED AGAINST A LIVE ENDPOINT: no GOOGLE_API_KEY was available when this
- * was written. Run `bun run tests/live/embedding-probe.ts` before trusting it.
- */
 const DEFAULT_MODEL = 'gemini-embedding-001'
 const DEFAULT_DIMENSION = 1536
 const BASE = process.env.GOOGLE_EMBEDDINGS_URL ?? 'https://generativelanguage.googleapis.com/v1beta'

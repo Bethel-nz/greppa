@@ -3,6 +3,7 @@ import { createRoute } from '@bethel-nz/sumi/router'
 import { resolver } from 'hono-openapi/zod'
 import { redis } from '~/lib/redis'
 
+import { authErrors } from '../../lib/errors'
 const querySchema = z.object({
   sessionId: z.string().min(1).describe('Conversation session ID to fetch history for'),
 })
@@ -32,7 +33,7 @@ export default createRoute({
       const { sessionId } = c.req.valid('query')
       const conversationId = c.get('conversationId')
       if (sessionId !== conversationId) {
-        return c.json({ error: 'forbidden' }, 403)
+        throw authErrors.FORBIDDEN()
       }
 
       const raw = (await redis.zrange(`history:${sessionId}`, 0, -1)) as unknown[]

@@ -1,23 +1,22 @@
 import './_mocks'
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { interceptScopedService } from './_memory-mocks'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { clearRedisState } from './_mocks'
 
-// Use the shared _mocks redis (its `set` honours NX). A per-file redis mock would
-// clobber the shared one process-wide via mock.module and break other test files.
-
-// Spy on the memory service so we assert the tool's effects, not Memvid behaviour.
 const calls = { add: [] as any[], ask: [] as any[] }
-let askResult: any = { answer: null, sources: [], context: '', grounding: null }
-mock.module('../../lib/memory/scoped-service', () => ({
+let askResult: any = { sources: [], context: '', edges: [] }
+
+const overrides = {
   addScopedMemory: async (input: any) => {
     calls.add.push(input)
-    return { scopeId: `scope-${input.userId}`, frameId: 'frame_1', status: 'indexed' }
+    return { scopeId: `scope-${input.userId}`, documentId: 'doc_1', status: 'indexed' as const }
   },
-  askScopedMemory: async (input: any) => {
+  retrieveScopedContext: async (input: any) => {
     calls.ask.push(input)
     return askResult
   },
-}))
+  listScopedMemoryEdges: async () => [],
+} as any
 
 const { buildTools } = await import('~/lib/chat/tools')
 
@@ -38,17 +37,19 @@ beforeEach(() => {
   clearRedisState()
   calls.add.length = 0
   calls.ask.length = 0
-  askResult = { answer: null, sources: [], context: '', grounding: null }
+  askResult = { sources: [], context: '', edges: [] }
+  interceptScopedService(overrides)
 })
+
+afterEach(() => interceptScopedService(null))
 
 describe('chat agent tools', () => {
   describe('search_knowledge', () => {
     test('queries the user scope, maps sources, and emits search cues', async () => {
       askResult = {
-        answer: 'Rex',
         sources: [{ title: 'Pets', snippet: 'I have a dog named Rex.', score: 0.9 }],
         context: 'I have a dog named Rex.',
-        grounding: { ok: true },
+        edges: [],
       }
       const { tools, emitted, sources } = makeHarness()
 
@@ -62,6 +63,37 @@ describe('chat agent tools', () => {
       expect(types).toContain('sources')
       const cues = emitted.filter((e) => e.type === 'cue').map((e) => e.data.status)
       expect(cues).toEqual(['searching_knowledge', 'reading_sources'])
+    })
+
+    test('passes document identity through so a citation is traceable', async () => {
+      askResult = {
+        sources: [
+          {
+            title: 'Q3 revenue report',
+            snippet: 'Revenue reached 4.2 million.',
+            score: 0.8,
+            documentId: 'doc-123',
+            sourceType: 'document',
+            sourceUrl: 'q3-report.pdf',
+          },
+        ],
+        context: 'Revenue reached 4.2 million.',
+        edges: [],
+      }
+      const { tools, emitted, sources } = makeHarness()
+
+      await tools.search_knowledge.execute!({ query: 'revenue' }, {} as any)
+
+      expect(sources()[0]).toEqual({
+        title: 'Q3 revenue report',
+        snippet: 'Revenue reached 4.2 million.',
+        score: 0.8,
+        documentId: 'doc-123',
+        sourceType: 'document',
+        sourceUrl: 'q3-report.pdf',
+      })
+      const event = emitted.find((e) => e.type === 'sources')!
+      expect(event.data[0].documentId).toBe('doc-123')
     })
 
     test('an empty result yields no sources and a safe fallback string', async () => {
@@ -80,31 +112,31 @@ describe('chat agent tools', () => {
     test('writes a durable fact to the user scope', async () => {
       const { tools } = makeHarness()
 
-      const out = await tools.remember.execute!({ title: 'Pet', text: 'Has a dog named Rex.' }, {} as any)
+      const out = await tools.remember.execute!({ title: 'Pet', text: 'Has a dog named Rex.', edges: [] }, {} as any)
 
-      expect(out).toBe('Saved to your memory.')
+      expect(out).toBe('Saved. It carries no relationships, so it will only be found by its wording.')
       expect(calls.add).toEqual([
-        { userId: 'user-1', title: 'Pet', text: 'Has a dog named Rex.', sourceType: 'chat' },
+        { userId: 'user-1', title: 'Pet', text: 'Has a dog named Rex.', sourceType: 'fact', folderId: undefined, edges: [] },
       ])
     })
 
     test('is idempotent: a replay of the same fact does not double-write', async () => {
       const { tools } = makeHarness()
-      const args = { title: 'Pet', text: 'Has a dog named Rex.' }
+      const args = { title: 'Pet', text: 'Has a dog named Rex.', edges: [] }
 
       const first = await tools.remember.execute!(args, {} as any)
       const second = await tools.remember.execute!(args, {} as any)
 
-      expect(first).toBe('Saved to your memory.')
-      expect(second).toBe('Already saved (duplicate).')
+      expect(first).toBe('Saved. It carries no relationships, so it will only be found by its wording.')
+      expect(second).toBe('Already saved (duplicate). Do not save it again.')
       expect(calls.add).toHaveLength(1)
     })
 
     test('a different fact is written even after a prior remember', async () => {
       const { tools } = makeHarness()
 
-      await tools.remember.execute!({ title: 'A', text: 'one' }, {} as any)
-      await tools.remember.execute!({ title: 'B', text: 'two' }, {} as any)
+      await tools.remember.execute!({ title: 'A', text: 'one', edges: [] }, {} as any)
+      await tools.remember.execute!({ title: 'B', text: 'two', edges: [] }, {} as any)
 
       expect(calls.add).toHaveLength(2)
     })

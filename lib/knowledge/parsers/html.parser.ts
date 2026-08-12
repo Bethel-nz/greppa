@@ -6,7 +6,6 @@ export async function parseHtml(input: ParserInput): Promise<ParsedDocument> {
   const html = input.text ?? input.buffer?.toString('utf-8') ?? ''
   const $ = cheerio.load(html)
 
-  // Remove scripts, styles, noscript, iframes
   $('script, style, noscript, iframe').remove()
 
   const title =

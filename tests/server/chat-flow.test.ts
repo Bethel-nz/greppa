@@ -16,8 +16,6 @@ function setEnv() {
   process.env.UPSTASH_REDIS_REST_TOKEN = 'fake'
 }
 
-// Boot the router once for the whole file; per-test isolation comes from
-// resetting config + mock state in beforeEach.
 let request: Awaited<ReturnType<typeof createMockApp>>['request']
 
 beforeAll(async () => {

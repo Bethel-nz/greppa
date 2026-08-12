@@ -6,6 +6,7 @@ import { redis } from '../lib/redis'
 import { loadGreppaConfig } from '../lib/config'
 import { triggerChatWorkflow } from '../lib/workflow'
 
+import { authErrors } from '../lib/errors'
 const bodySchema = z.object({
   message: z.string().min(1).describe('The message to send to the AI'),
   model: z.string().optional().default('llama-3.3-70b-versatile').describe('Groq model to use'),
@@ -16,7 +17,8 @@ const bodySchema = z.object({
     surrounding: z.string().optional().describe('Surrounding text context'),
   }).optional().describe('Optional context for RAG grounding'),
   orgId: z.string().optional().describe('Organization ID for multi-tenant knowledge access'),
-  workspaceId: z.string().min(1).optional().describe('Folder/workspace ID. Enables retrieval across the conversations and memories filed there.'),
+      workspaceId: z.string().min(1).optional().describe('Workspace ID. Both search tools retrieve only this workspace.'),
+      folderId: z.string().min(1).optional().describe('Optional folder used to organise this conversation inside its workspace.'),
 })
 
 const responseSchema = z.object({
@@ -31,7 +33,7 @@ export default createRoute({
     schema: { json: bodySchema },
     middleware: ['session-auth', 'rate-limit'],
     handler: async (c) => {
-      const { message, model, context, orgId, workspaceId } = c.req.valid('json')
+      const { message, model, context, orgId, workspaceId, folderId } = c.req.valid('json')
       const conversationId = c.get('conversationId')
       const isAnonymous = c.get('isAnonymous')
       const userId = c.get('userId')
@@ -39,11 +41,10 @@ export default createRoute({
       const messageId = ulid()
       const now = Date.now()
 
-      // Anonymous rate limit: 5 messages per conversation
       if (isAnonymous) {
         const count = await redis.incr(`anon:msg_count:${conversationId}`)
         if (count > ANON_MSG_LIMIT) {
-          return c.json({ error: 'anonymous message limit reached. sign in to continue.' }, 429)
+          throw authErrors.ANONYMOUS_LIMIT()
         }
         await redis.expire(`anon:msg_count:${conversationId}`, Math.floor(cfg.sessionTtlMs / 1000))
       }
@@ -71,6 +72,7 @@ export default createRoute({
         userId,
         orgId,
         workspaceId,
+        folderId,
       })
 
       return c.json({ messageId, channel: `msg:${messageId}` }, 202)

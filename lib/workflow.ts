@@ -25,6 +25,7 @@ export async function triggerChatWorkflow(payload: {
   userId?: string | null
   orgId?: string | null
   workspaceId?: string
+  folderId?: string
 }): Promise<void> {
   const base = process.env.GREPPA_PUBLIC_URL
   if (!base) throw new Error('GREPPA_PUBLIC_URL is required (full URL of this server)')

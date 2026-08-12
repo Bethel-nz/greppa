@@ -8,8 +8,24 @@ export * from './provider'
 
 let cached: EmbeddingProvider | null = null
 
+/**
+ * The deterministic provider is a hash, not a model. Defaulting to it in
+ * production would store unusable vectors and, worse, brand every scope file
+ * `deterministic@<dim>` in its identity meta — after which the real provider
+ * can no longer open those files without a full re-embed.
+ */
+function defaultKind(): string {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      '[embedding] EMBEDDING_PROVIDER must be set explicitly in production ' +
+        '(openrouter | google | openai-compatible)',
+    )
+  }
+  return 'deterministic'
+}
+
 function build(): EmbeddingProvider {
-  const kind = process.env.EMBEDDING_PROVIDER ?? 'deterministic'
+  const kind = process.env.EMBEDDING_PROVIDER ?? defaultKind()
   const model = process.env.EMBEDDING_MODEL
   const dimension = process.env.EMBEDDING_DIM ? Number(process.env.EMBEDDING_DIM) : undefined
 
@@ -28,10 +44,6 @@ function build(): EmbeddingProvider {
       if (!apiKey) throw new Error('[embedding] GOOGLE_API_KEY is required for EMBEDDING_PROVIDER=google')
       return createGoogleProvider({ apiKey, model, dimension })
     }
-    // Any OpenAI-compatible /v1/embeddings endpoint: OpenAI itself, NVIDIA NIM,
-    // or a self-hosted inference server. Use EMBEDDING_PROVIDER=openrouter for
-    // OpenRouter — its embeddings endpoint takes a different multimodal input
-    // shape and needs the ":free" model suffix.
     case 'openai-compatible': {
       const apiKey = process.env.EMBEDDING_API_KEY
       const baseUrl = process.env.EMBEDDING_BASE_URL
@@ -61,7 +73,6 @@ export function getEmbeddingProvider(): EmbeddingProvider {
   return cached
 }
 
-/** Test seam: drop the memoised provider so env changes take effect. */
 export function resetEmbeddingProvider(): void {
   cached = null
 }

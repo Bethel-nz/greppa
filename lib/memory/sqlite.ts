@@ -2,13 +2,6 @@ import { Database } from 'bun:sqlite'
 import { existsSync } from 'node:fs'
 import * as sqliteVec from 'sqlite-vec'
 
-/**
- * Bun's bundled SQLite on macOS is built without dynamic extension loading, so
- * sqlite-vec cannot register. Point Bun at a build that supports it. Linux
- * builds generally allow extensions, so this is a no-op there.
- *
- * MUST run before the first Database is constructed; Bun caches the library.
- */
 const MACOS_CANDIDATES = [
   '/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib',
   '/usr/local/opt/sqlite/lib/libsqlite3.dylib',
@@ -27,19 +20,8 @@ function configureSqlite(): void {
 
 export type OpenSqliteOptions = { readonly?: boolean; create?: boolean }
 
-/**
- * Open a scope database with the pragmas Checkpoint requires.
- *
- * journal_mode=DELETE is not a preference: WAL writes `-wal` and `-shm`
- * sidecars, and Checkpoint uploads exactly one path, so a WAL sidecar would be
- * silently dropped and lose data. Checkpoint already serialises writes per
- * scope and readers hold immutable generations, so WAL buys nothing here.
- */
 export function openSqlite(path: string, opts: OpenSqliteOptions = {}): Database {
   configureSqlite()
-  // Bun maps these options onto sqlite3_open_v2 flags, and `{readonly: false,
-  // create: false}` produces no flags at all, which the driver rejects with
-  // SQLITE_MISUSE. Each mode has to be requested explicitly.
   const flags = opts.readonly
     ? { readonly: true }
     : opts.create

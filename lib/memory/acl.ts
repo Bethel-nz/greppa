@@ -7,7 +7,6 @@ export type GreppaAclContext = {
   groupIds: string[]
 }
 
-/** Thrown when a user has no membership in the requested org. Routes map this to 403. */
 export class MembershipError extends Error {
   constructor(message = 'User does not belong to this organization') {
     super(message)

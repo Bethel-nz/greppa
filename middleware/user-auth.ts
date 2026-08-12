@@ -16,7 +16,6 @@ export const userAuth: MiddlewareHandler = async (c, next) => {
   c.set('authUser', session.user)
   c.set('authSession', session.session)
 
-  // Extract orgId from header if present (for multi-tenant context)
   const orgId = c.req.header('x-greppa-org-id')
   c.set('orgId', orgId || null)
 

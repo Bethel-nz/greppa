@@ -2,7 +2,7 @@
 // Re-run `sumi dev` to refresh after adding or removing middleware.
 
 declare global {
-  type MiddlewareName = 'session-auth' | 'chat-auth' | 'rate-limit' | 'user-auth';
+  type MiddlewareName = 'session-auth' | 'rate-limit' | 'user-auth';
 }
 
 export {};

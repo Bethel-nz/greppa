@@ -29,7 +29,6 @@ export function getDrizzle(): GreppaDatabase {
   return _drizzle
 }
 
-// Lazy proxy for simple property access
 export const drizzle = new Proxy({} as GreppaDatabase, {
   get(_target, prop) {
     const db = getDrizzle()
@@ -39,7 +38,7 @@ export const drizzle = new Proxy({} as GreppaDatabase, {
 
 export const schema = dbSchema
 
-export async function closeDbPool(): Promise<void> {
+async function closeDbPool(): Promise<void> {
   if (!pool) return
   const p = pool
   pool = null
@@ -47,22 +46,25 @@ export async function closeDbPool(): Promise<void> {
   await p.end()
 }
 
-// Graceful shutdown handlers
 function setupCleanup() {
-  const cleanup = async () => {
-    console.log('[db] closing pool...')
-    await closeDbPool()
-    process.exit(0)
+  let closing = false
+  const cleanup = async (signal: NodeJS.Signals) => {
+    if (closing) return
+    closing = true
+    console.log(`[db] ${signal} received, closing pool...`)
+    try {
+      await closeDbPool()
+    } catch (err) {
+      console.error('[db] pool did not close cleanly', err)
+    }
+    process.exit(signal === 'SIGINT' ? 130 : 143)
   }
   process.on('SIGINT', cleanup)
   process.on('SIGTERM', cleanup)
-  process.on('beforeExit', cleanup)
 }
 
-// Only setup cleanup in non-test environments
 if (process.env.NODE_ENV !== 'test') {
   setupCleanup()
 }
 
-// Re-export all drizzle-orm functions to ensure type consistency
 export * from 'drizzle-orm'

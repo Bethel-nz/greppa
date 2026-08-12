@@ -4,12 +4,10 @@ import { auth } from '~/lib/auth'
 
 const createSchema = z.object({
   name: z.string().min(1).max(100).optional(),
-  // Optional lifetime in days; omitted means the apiKey plugin default.
   expiresInDays: z.number().int().min(1).max(365).optional(),
 })
 
 export default createRoute({
-  // List the caller's API keys (secret values are never returned).
   get: {
     middleware: ['user-auth'],
     handler: async (c) => {
@@ -26,7 +24,6 @@ export default createRoute({
     },
   },
 
-  // Create a new API key. The plaintext key is returned ONCE in this response.
   post: {
     schema: { json: createSchema },
     middleware: ['user-auth'],

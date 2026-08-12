@@ -1,25 +1,19 @@
 import type { Database } from 'bun:sqlite'
 import { type EmbeddingProvider, EmbeddingIdentityError } from '../embedding/provider'
+import { entityAliasKeys } from './entity'
 
-export const SCHEMA_VERSION = 5
+export const SCHEMA_VERSION = 8
 
 export type ScopeIdentity = { model: string; dimension: number; schemaVersion: number }
 
-/**
- * Create every table. The vector table's dimension comes from the provider and
- * is fixed for the life of the file: vec0 cannot be altered in place, so
- * changing providers means reembedScope() drops and recreates it.
- */
 export function createSchema(db: Database, provider: EmbeddingProvider): void {
+  const priorVersion = readIdentity(db)?.schemaVersion ?? 0
+
   db.run(`create table if not exists meta(
     key   text primary key,
     value text not null
   )`)
 
-  // ACL columns carry the model Memvid used to enforce at query time. One file
-  // per scope already makes cross-tenant leakage structurally impossible; these
-  // preserve *within*-scope visibility, which physical separation cannot.
-  // Arrays are stored as JSON text and matched with json_each() at query time.
   db.run(`create table if not exists documents(
     id                   text primary key,
     title                text not null,
@@ -33,16 +27,18 @@ export function createSchema(db: Database, provider: EmbeddingProvider): void {
     acl_read_roles       text,
     acl_read_groups      text,
     acl_read_principals  text,
-    folder_id            text
+    workspace_id         text,
+    folder_id            text,
+    deleted_at           integer
   )`)
 
   migrateDocumentsAcl(db)
-  createGraphSchema(db)
+  if (priorVersion < 6) {
+    db.run('update documents set workspace_id = folder_id, folder_id = null where workspace_id is null')
+  }
+  db.run('create index if not exists documents_by_deleted on documents(deleted_at)')
+  createGraphSchema(db, priorVersion, provider)
 
-  // created_at / last_accessed / access_count drive temporal weighting. They
-  // live on chunks rather than documents because retrieval and reinforcement
-  // both happen at chunk granularity — one paragraph of a document can stay
-  // hot while the rest of it goes cold.
   db.run(`create table if not exists chunks(
     id            integer primary key,
     document_id   text not null references documents(id) on delete cascade,
@@ -56,14 +52,11 @@ export function createSchema(db: Database, provider: EmbeddingProvider): void {
     access_count  integer not null default 0
   )`)
   db.run('create index if not exists chunks_by_document on chunks(document_id)')
-  // Folder-scoped retrieval filters on this before the ACL predicate runs.
-  db.run('create index if not exists documents_by_folder on documents(folder_id)')
+  db.run('create index if not exists documents_by_placement on documents(workspace_id, folder_id)')
   db.run('create index if not exists chunks_by_recency on chunks(last_accessed, created_at)')
 
   migrateChunksTemporal(db)
 
-  // External-content FTS5: the text lives in `chunks`, not duplicated here.
-  // Rows must be inserted explicitly, and deletes need the 'delete' command.
   db.run(`create virtual table if not exists chunks_fts using fts5(
     text, content=chunks, content_rowid=id
   )`)
@@ -75,13 +68,7 @@ export function createSchema(db: Database, provider: EmbeddingProvider): void {
   writeIdentity(db, provider)
 }
 
-/**
- * Relationships live beside the memory documents they describe. A node is a
- * stable, human-named entity and an edge always retains the document that
- * supplied it as provenance. This keeps graph context scoped to the same
- * SQLite file as the memories it can enrich.
- */
-function createGraphSchema(db: Database): void {
+function createGraphSchema(db: Database, priorVersion: number, provider: EmbeddingProvider): void {
   db.run(`create table if not exists memory_nodes(
     id          text primary key,
     label       text not null,
@@ -100,14 +87,66 @@ function createGraphSchema(db: Database): void {
   db.run('create index if not exists memory_edges_by_source on memory_edges(source_node_id)')
   db.run('create index if not exists memory_edges_by_target on memory_edges(target_node_id)')
   db.run('create index if not exists memory_edges_by_document on memory_edges(document_id)')
+
+  createEntityIndex(db)
+  if (priorVersion < 7) backfillEntityIndex(db)
+
+  // Semantic tier for entity resolution: a label vector per node, keyed by the
+  // node's rowid. Backfilling existing labels would need embedding calls, which
+  // are async and can't run inside this synchronous migration — so the table is
+  // created empty and populated as nodes are written. Older nodes keep exact +
+  // trigram matching until they're touched again or the scope is re-embedded.
+  db.run(`create virtual table if not exists memory_nodes_vec using vec0(
+    embedding float[${provider.dimension}]
+  )`)
 }
 
 /**
- * Add the v3 temporal columns to a v2 `chunks` table. Existing rows get
- * created_at = 0, which reads as "maximally old" — deliberately conservative,
- * since backfilling a plausible timestamp would be inventing data. With decay
- * disabled (the default) it changes nothing.
+ * Lookup surfaces for entity names. A node keeps the id it was created with;
+ * every other spelling reaches it through an alias row, and near-misses are
+ * found by trigram search over labels rather than a full-table LIKE scan.
+ *
+ * alias_key is not unique on its own: two labels that fold to the same key
+ * ("Acme" and "Acme Corp") both keep their own node and both answer to it,
+ * which unions them at query time without rewriting anyone's edges.
  */
+function createEntityIndex(db: Database): void {
+  db.run(`create table if not exists memory_node_aliases(
+    alias_key   text not null,
+    node_id     text not null references memory_nodes(id) on delete cascade,
+    created_at  integer not null,
+    primary key(alias_key, node_id)
+  )`)
+  db.run('create index if not exists memory_node_aliases_by_node on memory_node_aliases(node_id)')
+  db.run(`create virtual table if not exists memory_nodes_fts using fts5(
+    node_id unindexed, label, tokenize='trigram'
+  )`)
+}
+
+function backfillEntityIndex(db: Database): void {
+  const nodes = db.prepare('select id, label, created_at from memory_nodes').all() as Array<{
+    id: string
+    label: string
+    created_at: number
+  }>
+  if (nodes.length === 0) return
+
+  const insertAlias = db.prepare(
+    `insert into memory_node_aliases(alias_key, node_id, created_at) values (?,?,?)
+     on conflict(alias_key, node_id) do nothing`,
+  )
+  const clearFts = db.prepare('delete from memory_nodes_fts where node_id = ?')
+  const insertFts = db.prepare('insert into memory_nodes_fts(node_id, label) values (?,?)')
+
+  db.transaction(() => {
+    for (const node of nodes) {
+      for (const key of entityAliasKeys(node.label)) insertAlias.run(key, node.id, node.created_at)
+      clearFts.run(node.id)
+      insertFts.run(node.id, node.label)
+    }
+  })()
+}
+
 function migrateChunksTemporal(db: Database): void {
   const existing = new Set(
     (db.prepare('pragma table_info(chunks)').all() as Array<{ name: string }>).map((c) => c.name),
@@ -122,11 +161,6 @@ function migrateChunksTemporal(db: Database): void {
   }
 }
 
-/**
- * Add the ACL and folder columns to an older `documents` table. Files written before the
- * ACL port default to `public` visibility, which preserves their existing
- * behaviour: nothing was filtering them before either.
- */
 function migrateDocumentsAcl(db: Database): void {
   const existing = new Set(
     (db.prepare('pragma table_info(documents)').all() as Array<{ name: string }>).map((c) => c.name),
@@ -137,7 +171,9 @@ function migrateDocumentsAcl(db: Database): void {
     ['acl_read_roles', 'text'],
     ['acl_read_groups', 'text'],
     ['acl_read_principals', 'text'],
+    ['workspace_id', 'text'],
     ['folder_id', 'text'],
+    ['deleted_at', 'integer'],
   ]
   for (const [name, type] of columns) {
     if (!existing.has(name)) db.run(`alter table documents add column ${name} ${type}`)
@@ -167,12 +203,6 @@ export function readIdentity(db: Database): ScopeIdentity | null {
   return { model, dimension: Number(dim), schemaVersion: Number(m.get('schema_version') ?? '0') }
 }
 
-/**
- * Refuse to query across embedding models. Comparing a query vector from model
- * A against document vectors from model B returns plausible-looking nonsense
- * rather than an error, so this check is the only thing standing between a
- * misconfiguration and silently wrong memories.
- */
 export function assertIdentity(db: Database, provider: EmbeddingProvider): void {
   const identity = readIdentity(db)
   if (!identity) return

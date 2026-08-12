@@ -8,18 +8,7 @@ import type { ObjectMeta, StorageBackend } from './storage'
 export type CheckpointConfig = {
   storage: StorageBackend
   cacheDir: string
-  /** Hard-ish ceiling on how many scopes stay open. See maxCacheBytes. */
   maxOpen: number
-  /**
-   * Soft ceiling on local cache bytes. Scope memories vary by orders of
-   * magnitude, so a file count alone cannot bound disk use.
-   *
-   * Both budgets apply: eviction runs until the open set is within maxOpen AND
-   * the tracked bytes are within maxCacheBytes. Only idle, unreferenced entries
-   * are evictable, so the budget is a target rather than a guarantee — see
-   * `overBudget`. Defaults to Infinity, which reproduces the maxOpen-only
-   * behaviour exactly.
-   */
   maxCacheBytes?: number
   idleMs: number
   now?: () => number
@@ -27,7 +16,6 @@ export type CheckpointConfig = {
 
 type Generation = {
   localPath: string
-  /** Size charged to the byte budget. Measured with stat(), never by reading. */
   bytes: number
   refcount: number
   retired: boolean
@@ -56,7 +44,6 @@ export class Checkpoint {
   private timer: ReturnType<typeof setInterval> | null = null
   private bytes = 0
   private warnedOverBudget = false
-  /** Wall clock at construction. Anything newer than this belongs to us. */
   private readonly startedAt: number
 
   constructor(cfg: CheckpointConfig) {
@@ -73,11 +60,6 @@ export class Checkpoint {
     return this.open.size
   }
 
-  /**
-   * Local bytes currently charged to this checkpoint: every current
-   * generation, every private working generation mid-write, every hydrated
-   * candidate, and every retired generation still pinned by a reader.
-   */
   get cacheBytes(): number {
     return this.bytes
   }
@@ -86,14 +68,6 @@ export class Checkpoint {
     return this.maxCacheBytes
   }
 
-  /**
-   * True when the cache exceeds its byte budget because everything left is
-   * pinned by an active reader or writer. Requests are never failed and pinned
-   * generations are never deleted to get back under budget; the overage clears
-   * as those operations finish. Alarm on this in production: a persistently
-   * true value means maxCacheBytes is too small for the live concurrency, or a
-   * single scope is larger than the whole budget.
-   */
   get overBudget(): boolean {
     return this.bytes > this.maxCacheBytes
   }
@@ -174,7 +148,6 @@ export class Checkpoint {
     }
   }
 
-  /** Size a local generation without pulling it into the JS heap. */
   private sizeOf(localPath: string): Promise<number> {
     return stat(localPath).then(
       (s) => s.size,
@@ -182,22 +155,16 @@ export class Checkpoint {
     )
   }
 
-  /** Adjust a generation's charge to `bytes`, keeping the running total exact. */
   private charge(generation: Generation, bytes: number): void {
     this.bytes += bytes - generation.bytes
     generation.bytes = bytes
     if (this.bytes <= this.maxCacheBytes) this.warnedOverBudget = false
   }
 
-  /** Drop a generation's charge, e.g. once its file is gone or renamed away. */
   private discharge(generation: Generation): void {
     this.charge(generation, 0)
   }
 
-  /**
-   * Uncharge and delete. The uncharge happens synchronously so the eviction
-   * loop sees the freed bytes immediately and cannot spin.
-   */
   private discard(generation: Generation): Promise<void> {
     this.discharge(generation)
     return rm(generation.localPath, { force: true })
@@ -211,8 +178,6 @@ export class Checkpoint {
   private async retire(generation: Generation | null): Promise<void> {
     if (!generation || generation.retired) return
     generation.retired = true
-    // A pinned generation stays on disk, and stays charged, until its last
-    // reader releases it. Readers are never torn out from under.
     if (generation.refcount === 0) {
       await this.discard(generation)
     }
@@ -234,11 +199,6 @@ export class Checkpoint {
     }
   }
 
-  /**
-   * Read directly from an immutable local generation. Writers always build and
-   * seal a separate generation, so readers never copy the full memory file and
-   * never observe a half-written generation.
-   */
   async read<T>(key: string, fn: (localPath: string) => Promise<T>): Promise<T> {
     const { entry, generation } = await this.withLock(key, async () => {
       const e = await this.ensureOpen(key, false)
@@ -268,17 +228,10 @@ export class Checkpoint {
       if (generation.retired && generation.refcount === 0) {
         await this.discard(generation)
       }
-      // Releasing a pin may make bytes reclaimable that were not before.
       this.evictIfNeeded()
     }
   }
 
-  /**
-   * Exclusive, optimistic write. fn receives a private working generation and
-   * may be invoked again if another process wins the R2 compare-and-set. It
-   * MUST only mutate that file, fully commit/close its handle (e.g. seal()), and
-   * be safe to rerun against a freshly hydrated generation.
-   */
   async write<T>(key: string, fn: (localPath: string, exists: boolean) => Promise<T>): Promise<T> {
     return this.withLock(key, async () => {
       for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
@@ -298,15 +251,11 @@ export class Checkpoint {
 
         try {
           if (entry.current) {
-            // Ask the filesystem for a copy-on-write clone where supported;
-            // otherwise copy once on the write path, never on every read.
             await copyFile(entry.current.localPath, working.localPath, constants.COPYFILE_FICLONE)
             this.charge(working, await this.sizeOf(working.localPath))
           }
 
           const result = await fn(working.localPath, exists)
-          // The callback just grew the working generation; recharge before it
-          // becomes a candidate so the budget sees its real size.
           this.charge(working, await this.sizeOf(working.localPath))
 
           candidate = {
@@ -323,7 +272,7 @@ export class Checkpoint {
           const previous = entry.current
           entry.current = candidate
           entry.etag = etag
-          candidate = null // published: no longer ours to discard
+          candidate = null 
           await this.retire(previous)
           this.evictIfNeeded()
           return result
@@ -332,8 +281,6 @@ export class Checkpoint {
           if (candidate) await this.discard(candidate)
 
           if (err instanceof ConflictError) {
-            // Our working generation was based on stale bytes. Never force it
-            // over the new object: discard, rehydrate, and rerun fn.
             await this.invalidate(key, entry)
             if (attempt + 1 < WRITE_ATTEMPTS) continue
           } else if (entry.current && !(await this.pathExists(entry.current.localPath))) {
@@ -377,40 +324,15 @@ export class Checkpoint {
     })
   }
 
-  /**
-   * Delete generation files stranded by a previous process.
-   *
-   * Checkpoint keeps no persistent index: the open map is rebuilt from R2 on
-   * every boot, and a local generation is never reused across restarts. So a
-   * crash leaves `.generation-`/`.write-`/`.hydrate-` files that no instance
-   * will ever claim — they are invisible to `maxCacheBytes` and nothing
-   * reclaims them. On a long-lived host with a persistent cacheDir that leaks.
-   *
-   * Two guards make this safe rather than destructive:
-   *
-   * 1. **Nothing newer than this instance is touched.** Files created since
-   *    construction are ours — either a tracked generation or a working copy
-   *    mid-write, which is a local variable and appears in no map.
-   * 2. **Nothing younger than `minAgeMs` is touched.** If another process
-   *    shares this cacheDir, its live generations look exactly like orphans
-   *    from here. The age floor is what keeps a concurrent instance's pinned
-   *    files out of reach.
-   *
-   * Guard 2 narrows the multi-process race but cannot close it. A cacheDir
-   * shared by two processes is outside this design; give each its own.
-   */
   async sweepOrphans(opts: { minAgeMs?: number } = {}): Promise<{ removed: number; bytes: number }> {
     const minAgeMs = opts.minAgeMs ?? 60 * 60_000
     const cutoff = Math.min(this.startedAt, Date.now() - minAgeMs)
     const result = { removed: 0, bytes: 0 }
 
     const walk = async (dir: string): Promise<void> => {
-      let entries
-      try {
-        entries = await readdir(dir, { withFileTypes: true })
-      } catch {
-        return // cacheDir may not exist yet
-      }
+      const entries = await readdir(dir, { withFileTypes: true }).catch(() => null)
+      if (!entries) return
+
       for (const e of entries) {
         const p = join(dir, e.name)
         if (e.isDirectory()) {
@@ -427,7 +349,7 @@ export class Checkpoint {
             result.removed++
             result.bytes += s.size
           },
-          () => {}, // raced with another sweep; not an error
+          () => {},
         )
       }
     }
@@ -467,19 +389,6 @@ export class Checkpoint {
     }
   }
 
-  /**
-   * Evict least-recently-used idle entries until both the entry-count and the
-   * byte budget are satisfied.
-   *
-   * Entries with a live refcount are skipped, so when the only thing left is
-   * in-flight work the loop stops with the cache still over budget rather than
-   * pulling a file out from under an active reader. That state is reported by
-   * `overBudget` and warned about once per transition. It is reachable two
-   * ways: enough concurrent scopes to outweigh the budget, or a single scope
-   * bigger than the entire budget — in which case every read of that scope is
-   * over budget for its whole duration, and maxCacheBytes must be raised above
-   * the largest scope the deployment intends to serve.
-   */
   private evictIfNeeded(): void {
     while (this.open.size > this.maxOpen || this.bytes > this.maxCacheBytes) {
       let victim: Entry | null = null
@@ -488,8 +397,6 @@ export class Checkpoint {
         if (!victim || entry.lastUsed < victim.lastUsed) victim = entry
       }
       if (!victim) {
-        // evict() discharges synchronously, so if bytes are still over budget
-        // here it is because everything remaining is pinned.
         if (this.bytes > this.maxCacheBytes && !this.warnedOverBudget) {
           this.warnedOverBudget = true
           console.warn(

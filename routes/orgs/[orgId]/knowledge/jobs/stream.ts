@@ -33,7 +33,6 @@ export default createRoute({
         return
       }
 
-      // Verify user belongs to org
       try {
         await getAclContext({ userId, orgId })
       } catch {
@@ -44,7 +43,6 @@ export default createRoute({
         return
       }
 
-      // Verify job exists and belongs to org
       const job = await drizzle.query.ingestionJobs.findFirst({
         where: (j, { and, eq }) => and(eq(j.id, jobId), eq(j.orgId, orgId)),
       })
@@ -57,7 +55,6 @@ export default createRoute({
         return
       }
 
-      // Send all existing events first
       const existingEvents = await drizzle
         .select()
         .from(schema.ingestionJobEvents)
@@ -85,7 +82,6 @@ export default createRoute({
         lastEventTime = event.createdAt
       }
 
-      // If already terminal, close immediately
       if (job.status === 'indexed' || job.status === 'failed') {
         await stream.writeSSE({
           event: 'done',
@@ -94,9 +90,8 @@ export default createRoute({
         return
       }
 
-      // Poll for new events
       const pollIntervalMs = 1000
-      const maxWaitMs = 10 * 60 * 1000 // 10 minutes max
+      const maxWaitMs = 10 * 60 * 1000 
       const startTime = Date.now()
       let isTerminal = false
 
@@ -130,7 +125,6 @@ export default createRoute({
           lastEventTime = event.createdAt
         }
 
-        // Check if terminal
         const currentJob = await drizzle.query.ingestionJobs.findFirst({
           where: (j, { eq }) => eq(j.id, jobId),
         })
@@ -147,7 +141,6 @@ export default createRoute({
         }
       }
 
-      // Timeout fallback
       if (!isTerminal) {
         await stream.writeSSE({
           event: 'done',

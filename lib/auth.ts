@@ -171,8 +171,6 @@ const authConfig = {
         return regex.test(username)
       },
     }),
-    // Exposes the auth OpenAPI schema at /api/v1/auth/open-api/generate-schema.
-    // Default Scalar UI disabled; the schema is a source in the Sumi docs page.
     openAPI({ disableDefaultReference: true }),
   ],
 

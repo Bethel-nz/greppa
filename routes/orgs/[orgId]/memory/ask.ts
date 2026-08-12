@@ -3,9 +3,13 @@ import { createRoute } from '@bethel-nz/sumi/router'
 import { askMemory } from '~/lib/memory/service'
 import { MembershipError } from '~/lib/memory/acl'
 
+import { placementBody } from '~/lib/memory/placement'
+import { authErrors, requestErrors } from '../../../../lib/errors'
+
 const bodySchema = z.object({
   question: z.string().min(1),
   limit: z.number().int().min(1).max(50).optional().default(10),
+  ...placementBody,
 })
 
 export default createRoute({
@@ -16,16 +20,16 @@ export default createRoute({
       const orgId = c.req.param('orgId')
       const userId = c.get('userId')
       if (!userId || !orgId) {
-        return c.json({ error: 'missing org or user context' }, 400)
+        throw requestErrors.SCOPE_CONTEXT_MISSING()
       }
 
-      const { question, limit } = c.req.valid('json')
+      const { question, limit, workspaceId, folderId } = c.req.valid('json')
       try {
-        const answer = await askMemory({ userId, orgId, question, limit })
+        const answer = await askMemory({ userId, orgId, question, limit, workspaceId, folderId })
         return c.json({ orgId, question, answer })
       } catch (err) {
         if (err instanceof MembershipError) {
-          return c.json({ error: 'forbidden' }, 403)
+          throw authErrors.FORBIDDEN()
         }
         throw err
       }

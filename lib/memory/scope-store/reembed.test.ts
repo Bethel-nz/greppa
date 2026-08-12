@@ -102,7 +102,6 @@ describe('reembedScope', () => {
     store.close()
 
     const db = openSqlite(path, { create: false })
-    // No getAsset supplied, so the image bytes are unreachable.
     await expect(reembedScope(db, createDeterministicProvider(128))).rejects.toThrow(/cannot re-embed/)
     db.close()
     cleanup()

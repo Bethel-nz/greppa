@@ -11,7 +11,6 @@ describe('chat lifecycle', () => {
     zsets['msg:m1:events'] = [{ score: 1, member: '{}' }]
     const { skip } = await beginRun({ messageId: 'm1', ttlMs: 300000 })
     expect(skip).toBe(true)
-    // A terminal re-run must not wipe the completed log.
     expect(zsets['msg:m1:events']).toBeDefined()
   })
 

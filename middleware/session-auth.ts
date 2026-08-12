@@ -14,11 +14,9 @@ export const sessionAuth: MiddlewareHandler = async (c, next) => {
   c.set('sessionId', conversationId)
   c.set('conversationId', conversationId)
 
-  // Extract orgId from header if present (for multi-tenant context)
   const orgId = c.req.header('x-greppa-org-id')
   c.set('orgId', orgId || null)
 
-  // Try Better Auth session
   const session = await auth.api.getSession({
     headers: c.req.raw.headers,
   })
@@ -30,7 +28,6 @@ export const sessionAuth: MiddlewareHandler = async (c, next) => {
     c.set('authSession', session.session)
     c.set('isAnonymous', false)
 
-    // Warm cache: fetch org memberships and cache in Redis
     try {
       const cacheKey = `user:${userId}:orgs`
       const cached = await redis.get(cacheKey)
@@ -44,16 +41,14 @@ export const sessionAuth: MiddlewareHandler = async (c, next) => {
           role: m.role,
           groupIds: m.groupIds,
         }))
-        await redis.set(cacheKey, JSON.stringify(orgData), { ex: 3600 }) // 1 hour TTL
+        await redis.set(cacheKey, JSON.stringify(orgData), { ex: 3600 }) 
       }
     } catch {
-      // cache warm failure is non-blocking
     }
 
     return next()
   }
 
-  // Anonymous
   c.set('userId', null)
   c.set('authUser', null)
   c.set('authSession', null)

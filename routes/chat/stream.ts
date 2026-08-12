@@ -35,15 +35,12 @@ export default createRoute({
         | { conversationId?: string; status?: string }
         | null
 
-      // Same not_found for expired/unknown/cross-conversation, so it is not an existence oracle.
       if (!meta || meta.conversationId !== conversationId) {
         await stream.writeSSE({ event: 'error', data: JSON.stringify({ code: 'not_found', reason: 'unknown message' }) })
         return
       }
 
       const eventsKey = `msg:${messageId}:events`
-      // Strict digits only. A legacy ULID cursor ("01H...") must be unparseable so
-      // it triggers a full replay, not a partial parseInt that skips early events.
       const rawCursor = c.req.header('last-event-id') ?? ''
       const cursor = /^\d+$/.test(rawCursor) ? Number(rawCursor) : NaN
 
@@ -57,7 +54,6 @@ export default createRoute({
         if (TERMINAL.has(ev.type)) terminated = true
       }
 
-      // Subscribe first (buffering) so nothing emitted between snapshot and tail is lost.
       const buffer: StoredEvent[] = []
       let snapshotDone = false
       const channel = realtime.channel(messageId)
@@ -72,15 +68,12 @@ export default createRoute({
       })
 
       try {
-        // Upstash auto-deserializes JSON members on read (returns objects); the
-        // in-memory test mock returns raw strings. Handle both.
         const rawLog = (await redis.zrange(eventsKey, 0, -1)) as unknown[]
         const log: StoredEvent[] = rawLog.map((m) =>
           typeof m === 'string' ? (JSON.parse(m) as StoredEvent) : (m as StoredEvent),
         )
         const maxSeq = log.length ? log[log.length - 1].seq : 0
 
-        // Unparseable or stale cursor -> full replay.
         const effectiveCursor = Number.isFinite(cursor) && cursor <= maxSeq ? cursor : 0
 
         for (const ev of log) {
@@ -88,22 +81,15 @@ export default createRoute({
           if (terminated) break
         }
 
-        // Drain buffered live events as a queue, then flip. Draining before the flip
-        // stops a newly-arrived event from jumping ahead and stranding a buffered one
-        // behind the seq high-water mark. The flip is synchronous with an empty buffer,
-        // so no onData can interleave between the two.
         while (buffer.length && !terminated) await forward(buffer.shift()!)
         snapshotDone = true
         if (terminated) return
 
-        // meta is terminal but the log carried no terminal frame (incomplete or
-        // expired log). Give the client closure instead of returning silently.
         if (meta.status && TERMINAL.has(meta.status)) {
           await stream.writeSSE({ event: 'error', data: JSON.stringify({ code: 'incomplete', reason: 'stream ended without a completion frame' }) })
           return
         }
 
-        // Tail live events; bail on a terminal event or a stalled window.
         let seen = lastSeq
         let lastActivity = Date.now()
         while (!terminated) {

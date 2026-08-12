@@ -2,12 +2,14 @@ import { z } from 'zod'
 import { createRoute } from '@bethel-nz/sumi/router'
 import { resolver } from 'hono-openapi/zod'
 import { commitMemoryCard } from '~/lib/memory/service'
+import { MAX_EXTRACTED_EDGES } from '~/lib/memory/extract-edges'
 import { enqueueMemoryWrite } from '~/lib/memory/queue'
 import { getAclContext } from '~/lib/memory/acl'
 import { updateJobProgress } from '~/lib/knowledge/services/progress.service'
 import { drizzle, schema } from '~/lib/db'
 import { eq, and } from 'drizzle-orm'
 
+import { authErrors, requestErrors } from '../../../lib/errors'
 const commitSchema = z.object({
   jobId: z.string().min(1),
   orgId: z.string().min(1),
@@ -19,6 +21,18 @@ const commitSchema = z.object({
   text: z.string().optional(),
   r2Key: z.string().optional(),
   sourceUrl: z.string().optional(),
+  edges: z
+    .array(
+      z.object({
+        source: z.string().min(1).max(120),
+        target: z.string().min(1).max(120),
+        relation: z.string().min(1).max(60),
+        weight: z.number().positive().max(100).optional(),
+      }),
+    )
+    .max(MAX_EXTRACTED_EDGES)
+    .optional()
+    .describe('Relationships extracted from the document during ingestion.'),
 })
 
 const responseSchema = z.object({
@@ -30,23 +44,27 @@ export default createRoute({
   post: {
     schema: { json: commitSchema },
     handler: async (c) => {
+      // Both sides being undefined must not read as a match: with
+      // INTERNAL_API_KEY unset, a request carrying no header would otherwise
+      // authenticate itself against nothing.
+      const expected = process.env.INTERNAL_API_KEY
+      if (!expected) {
+        console.error('[internal] INTERNAL_API_KEY is not configured; refusing every commit')
+        throw authErrors.REQUIRED()
+      }
       const internalKey = c.req.header('x-internal-api-key')
-      if (internalKey !== process.env.INTERNAL_API_KEY) {
-        return c.json({ error: 'unauthorized' }, 401)
+      if (!internalKey || internalKey !== expected) {
+        throw authErrors.REQUIRED()
       }
 
       const body = c.req.valid('json')
 
-      // Re-verify membership before any write.
-      let acl
-      try {
-        acl = await getAclContext({ userId: body.userId, orgId: body.orgId })
-      } catch {
-        return c.json({ error: 'membership verification failed' }, 403)
-      }
+      const acl = await getAclContext({ userId: body.userId, orgId: body.orgId }).catch(() => {
+        throw authErrors.MEMBERSHIP_UNVERIFIABLE()
+      })
 
       if (body.mode === 'text' && !body.text) {
-        return c.json({ error: 'text is required for mode "text"' }, 400)
+        throw requestErrors.FIELD_REQUIRED({ field: 'text, for mode "text"' })
       }
 
       const result = await enqueueMemoryWrite(async () => {
@@ -68,6 +86,7 @@ export default createRoute({
           text: body.text!,
           sourceType: body.sourceType,
           sourceUrl: body.sourceUrl,
+          edges: body.edges,
         })
 
         await updateJobProgress({
@@ -80,7 +99,6 @@ export default createRoute({
           message: 'Memory sealed and synced to R2',
         })
 
-        // Update document status
         await drizzle
           .update(schema.documents)
           .set({ status: 'indexed', indexedAt: new Date() })

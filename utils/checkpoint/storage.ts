@@ -6,12 +6,6 @@ export interface StorageBackend {
   head(key: string): Promise<ObjectMeta | null>
   get(key: string): Promise<{ body: Uint8Array; etag: string } | null>
   putIfMatch(key: string, body: Uint8Array, etag: string | null): Promise<string>
-  /**
-   * Optional file-oriented operations. Production object stores should provide
-   * these so checkpoint hydration and flushes do not materialize a whole blob
-   * in the Node heap. The byte-oriented methods remain for simple adapters
-   * such as MemoryStorage.
-   */
   getToFile?(key: string, localPath: string): Promise<{ etag: string } | null>
   putFileIfMatch?(key: string, localPath: string, etag: string | null): Promise<string>
   delete(key: string): Promise<void>

@@ -4,6 +4,7 @@ import { resolver } from "hono-openapi/zod";
 import { getOrgStats } from "../lib/memory/service";
 import { getMemoryCacheStats } from "../lib/memory/stats";
 
+import { requestErrors } from '../lib/errors'
 const statsSchema = z.object({
   orgId: z.string(),
   documents: z.object({
@@ -25,7 +26,7 @@ export default createRoute({
     handler: async (c) => {
       const orgId = c.req.query('orgId')
       if (!orgId) {
-        return c.json({ error: 'orgId query param required' }, 400)
+        throw requestErrors.ORG_ID_REQUIRED()
       }
 
       const docStats = await getOrgStats(orgId)

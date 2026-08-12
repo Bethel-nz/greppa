@@ -1,21 +1,5 @@
 import { type EmbeddingProvider, type EmbedKind, l2normalize } from './provider'
 
-/**
- * Nemotron Embed VL 1B v2 via OpenRouter's /api/v1/embeddings endpoint.
- * Multimodal: text, image, or both in a single input. 2048 dimensions.
- *
- * Verified against the live endpoint on 2026-07-25:
- *   plain-string input                  -> 200, dim 2048, norm 0.99975
- *   structured {content:[...]} input    -> 200, dim 2048
- *   base64 data: URL image              -> 200, dim 2048, norm 1.00017
- *   text + image combined in one input  -> 200, dim 2048
- *
- * The `:free` suffix on the model id is required — the bare id returns
- * "No endpoints found". Vectors arrive very close to unit length already, but
- * l2normalize still runs: the store compares with dot product and a 0.9997-norm
- * vector skews scores slightly, while a future model change could skew them a
- * lot without any error surfacing.
- */
 const DEFAULT_MODEL = 'nvidia/llama-nemotron-embed-vl-1b-v2:free'
 const DEFAULT_DIMENSION = 2048
 const ENDPOINT = process.env.OPENROUTER_EMBEDDINGS_URL ?? 'https://openrouter.ai/api/v1/embeddings'
@@ -38,10 +22,6 @@ export function createOpenRouterProvider(cfg: OpenRouterConfig): EmbeddingProvid
         model,
         input,
         encoding_format: 'float',
-        // Not optional. Verified 2026-07-25: omitting input_type produces a
-        // vector byte-identical to input_type "query", while "passage" differs.
-        // So the default embeds everything as a query, and documents indexed
-        // without this are in the wrong half of an asymmetric model's space.
         input_type: kind === 'query' ? 'query' : 'passage',
       }),
     })

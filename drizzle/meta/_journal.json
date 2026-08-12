@@ -15,6 +15,13 @@
       "when": 1782676302859,
       "tag": "0001_graceful_cloak",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786180989529,
+      "tag": "0002_sticky_hobgoblin",
+      "breakpoints": true
     }
   ]
 }

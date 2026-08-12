@@ -1,4 +1,3 @@
-/** Thrown when a scope's stored embedding identity disagrees with the live provider. */
 export class EmbeddingIdentityError extends Error {
   constructor(expected: string, actual: string) {
     super(
@@ -10,7 +9,6 @@ export class EmbeddingIdentityError extends Error {
   }
 }
 
-/** Scale to unit length. A zero vector is returned unchanged rather than NaN. */
 export function l2normalize(v: Float32Array): Float32Array {
   let sum = 0
   for (const x of v) sum += x * x
@@ -24,25 +22,13 @@ export function l2normalize(v: Float32Array): Float32Array {
 export type EmbedKind = 'document' | 'query'
 
 export interface EmbeddingProvider {
-  /** Stable identity written to meta, e.g. "google/gemini-embedding-2@1536". */
   readonly id: string
-  /** Configured at construction. Never a module constant. */
   readonly dimension: number
-  /** Largest number of inputs per upstream request. */
   readonly maxBatchSize: number
-  /**
-   * Embed text. Implementations MUST return L2-normalized vectors of exactly
-   * `dimension` length: the store compares with dot product and unnormalized
-   * vectors produce silently wrong distances.
-   *
-   * `kind` maps to the provider's asymmetric retrieval mode (Google's
-   * task_type). Embedding a query as a document measurably reduces recall.
-   */
   embed(texts: string[], kind: EmbedKind): Promise<Float32Array[]>
   embedImage?(assets: Array<{ bytes: Uint8Array; mime: string }>): Promise<Float32Array[]>
 }
 
-/** Split into provider-sized batches and run them in order. */
 export async function embedInBatches(
   provider: EmbeddingProvider,
   texts: string[],

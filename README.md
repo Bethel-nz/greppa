@@ -62,11 +62,11 @@ ETag compare-and-set.
 2. **Chat** — POST to `/chat` and stream via `/chat/stream`.
 3. **Remember** — the agent can persist a fact with explicit entity edges, then
    ask for the relationships around a person, project, or decision later.
-4. **Search** — Greppa decides when to query the knowledge base using tool-use.
-   A conversation with a `workspaceId` gets an additional, folder-scoped search
-   tool. Completed workspace exchanges are archived into that folder so the
-   agent can recall a different conversation without searching the user's whole
-   personal memory.
+4. **Search**: Greppa decides when to query the knowledge base using tool use.
+   A conversation can carry a `workspaceId` and optional `folderId`. Inside it,
+   both search tools retrieve only the entire workspace, including records in
+   every folder. Completed exchanges are archived to that workspace while the
+   folder only keeps the conversation organised.
 
 ## Design notes
 
@@ -84,9 +84,9 @@ ETag compare-and-set.
 | `GET` | `/knowledge` | List all ingested articles |
 | `POST` | `/knowledge` | Ingest a text article |
 | `PUT` | `/knowledge` | Upload a document file (multipart) |
-| `GET` | `/knowledge/:frameId` | Get article metadata |
-| `PATCH` | `/knowledge/:frameId` | Update an article |
-| `DELETE` | `/knowledge/:frameId` | Delete an article |
+| `GET` | `/knowledge/:documentId` | Get article metadata |
+| `PATCH` | `/knowledge/:documentId` | Update an article |
+| `DELETE` | `/knowledge/:documentId` | Delete an article |
 | `POST` | `/chat` | Enqueue chat generation |
 | `GET` | `/chat/stream` | Subscribe to message SSE |
 | `GET` | `/chat/history` | Load conversation history |

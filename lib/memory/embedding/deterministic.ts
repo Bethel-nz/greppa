@@ -1,12 +1,5 @@
 import { type EmbeddingProvider, type EmbedKind, l2normalize } from './provider'
 
-/**
- * Offline provider for tests. Builds a bag-of-words vector by hashing each
- * token into the dimension space, so texts sharing vocabulary land closer
- * together than unrelated texts. Not semantic — it cannot substitute for a
- * real model in retrieval-quality assertions — but it is deterministic, free,
- * and needs no network.
- */
 function hash(token: string): number {
   let h = 2166136261 >>> 0
   for (let i = 0; i < token.length; i++) {

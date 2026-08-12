@@ -59,4 +59,3 @@ export function loadAuthConfig(): GreppaAuthConfig {
   return cached
 }
 
-

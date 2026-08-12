@@ -11,8 +11,6 @@ export type StoredEvent = {
   data: unknown
 }
 
-// Durable ZSET write before the live Realtime emit, so a resume can always replay.
-// The event id is the monotonic seq; the log TTL re-anchors on every write.
 export function makeEmitter({ messageId, ttlMs }: { messageId: string; ttlMs: number }) {
   const channel = realtime.channel(messageId)
   const eventsKey = `msg:${messageId}:events`

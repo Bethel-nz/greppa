@@ -1,22 +1,17 @@
-import { eq, and, sql, count } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 import { drizzle, schema } from '~/lib/db'
+import { deleteOrgMemory, updateOrgMemoryDocument } from '~/lib/memory/service'
 
 export type DocumentUpdateInput = {
   title?: string
   metadata?: Record<string, unknown>
   sourceUrl?: string
 }
-
 export async function getDocumentById(docId: string, orgId: string) {
   const doc = await drizzle.query.documents.findFirst({
     where: (d, { and, eq }) => and(eq(d.id, docId), eq(d.orgId, orgId)),
   })
   return doc ?? null
-}
-
-export async function getDocumentByFrameId(frameId: string, orgId: string) {
-  // frameId maps to document.id for now
-  return getDocumentById(frameId, orgId)
 }
 
 export async function updateDocument(
@@ -34,6 +29,16 @@ export async function updateDocument(
     updates.metadata = { ...(existing.metadata as Record<string, unknown>), ...input.metadata }
   }
 
+  // Search cites the scope file's copy of these fields, so a rename that only
+  // lands in Postgres keeps quoting the old title back at the user. `metadata`
+  // is not carried across: the scope file's meta_json records provenance, not
+  // the caller's tags.
+  await updateOrgMemoryDocument({
+    orgId,
+    documentId: docId,
+    fields: { title: input.title, sourceUrl: input.sourceUrl },
+  })
+
   await drizzle
     .update(schema.documents)
     .set(updates)
@@ -46,6 +51,11 @@ export async function softDeleteDocument(docId: string, orgId: string) {
   const existing = await getDocumentById(docId, orgId)
   if (!existing) return false
 
+  // Memory first, Postgres second. If the scope write fails the request fails
+  // and nothing has changed; the reverse order would mark the document deleted
+  // while search kept serving its contents.
+  await deleteOrgMemory({ orgId, documentIds: [docId] })
+
   await drizzle
     .update(schema.documents)
     .set({
@@ -54,7 +64,6 @@ export async function softDeleteDocument(docId: string, orgId: string) {
     })
     .where(and(eq(schema.documents.id, docId), eq(schema.documents.orgId, orgId)))
 
-  // Record deletion event
   await drizzle.insert(schema.memoryEvents).values({
     id: crypto.randomUUID(),
     orgId,
@@ -65,39 +74,4 @@ export async function softDeleteDocument(docId: string, orgId: string) {
   })
 
   return true
-}
-
-export async function getDocumentStats(orgId: string) {
-  const [total, indexed, pending, failed] = await Promise.all([
-    drizzle
-      .select({ count: count() })
-      .from(schema.documents)
-      .where(and(eq(schema.documents.orgId, orgId), sql`${schema.documents.status} != 'deleted'`))
-      .then((r) => r[0]?.count ?? 0),
-
-    drizzle
-      .select({ count: count() })
-      .from(schema.documents)
-      .where(and(eq(schema.documents.orgId, orgId), eq(schema.documents.status, 'indexed')))
-      .then((r) => r[0]?.count ?? 0),
-
-    drizzle
-      .select({ count: count() })
-      .from(schema.documents)
-      .where(
-        and(
-          eq(schema.documents.orgId, orgId),
-          sql`${schema.documents.status} IN ('pending', 'processing')`,
-        ),
-      )
-      .then((r) => r[0]?.count ?? 0),
-
-    drizzle
-      .select({ count: count() })
-      .from(schema.documents)
-      .where(and(eq(schema.documents.orgId, orgId), eq(schema.documents.status, 'failed')))
-      .then((r) => r[0]?.count ?? 0),
-  ])
-
-  return { total, indexed, pending, failed }
 }

@@ -8,7 +8,7 @@
         "@ai-sdk/groq": "^4.0.1",
         "@aws-sdk/client-s3": "^3.1053.0",
         "@aws-sdk/s3-request-presigner": "^3.1053.0",
-        "@bethel-nz/sumi": "1.3.1",
+        "@bethel-nz/sumi": "1.4.0",
         "@better-auth/api-key": "^1.6.11",
         "@better-auth/drizzle-adapter": "^1.6.11",
         "@firecrawl/anydoc": "^0.1.6",
@@ -24,7 +24,7 @@
         "better-auth": "^1.6.11",
         "cheerio": "^1.2.0",
         "drizzle-orm": "^0.45.2",
-        "groq-sdk": "^1.1.2",
+        "evlog": "^2.24.0",
         "hono": "^4.12.12",
         "hono-openapi": "^0.4.8",
         "html-to-text": "^10.0.0",
@@ -138,7 +138,7 @@
 
     "@aws/lambda-invoke-store": ["@aws/lambda-invoke-store@0.2.4", "", {}, "sha512-iY8yvjE0y651BixKNPgmv1WrQc+GZ142sb0z4gYnChDDY2YqI4P/jsSopBWrKfAt7LOJAkOXt7rC/hms+WclQQ=="],
 
-    "@bethel-nz/sumi": ["@bethel-nz/sumi@1.3.1", "", { "dependencies": { "@hono/standard-validator": "^0.1.5", "@hono/zod-validator": "^0.7.6", "@scalar/hono-api-reference": "^0.9.48", "@types/prompts": "^2.4.9", "cac": "^6.7.14", "chokidar": "^4.0.3", "hono": "^4.12.12", "hono-openapi": "^0.4.8", "hono-rate-limiter": "^0.5.3", "lodash.debounce": "^4.0.8", "pino": "^9.14.0", "prompts": "^2.4.2", "zod": "^4.3.6", "zod-openapi": "^5.4.6", "zodest": "^0.3.2" }, "bin": { "sumi": "dist/bin/sumi-cli.js" } }, "sha512-h3GL/xS4LEy428uXioStTKdb/I7jlVBj3YJzNLWDWHNs0T9IXJvwmP7T3ObRoaPoMsGNgszp5rhqvgpXiwnv3w=="],
+    "@bethel-nz/sumi": ["@bethel-nz/sumi@1.4.0", "", { "dependencies": { "@hono/standard-validator": "^0.1.5", "@hono/zod-validator": "^0.7.6", "@scalar/hono-api-reference": "^0.9.48", "@types/prompts": "^2.4.9", "cac": "^6.7.14", "chokidar": "^4.0.3", "hono": "^4.12.12", "hono-openapi": "^0.4.8", "hono-rate-limiter": "^0.5.3", "lodash.debounce": "^4.0.8", "pino": "^9.14.0", "prompts": "^2.4.2", "zod": "^4.3.6", "zod-openapi": "^5.4.6", "zodest": "^0.3.2" }, "bin": { "sumi": "dist/bin/sumi-cli.js" } }, "sha512-pH97jIyyOewSjB2SEpj0HwU2YeJ3hIvFr7ze6DaACCDf+/b7+VQbzssBBpwHX4kMEfyqE8a4zmGbnYCIX17FTw=="],
 
     "@better-auth/api-key": ["@better-auth/api-key@1.6.11", "", { "dependencies": { "zod": "^4.3.6" }, "peerDependencies": { "@better-auth/core": "^1.6.11", "@better-auth/utils": "0.4.0", "better-auth": "^1.6.11" } }, "sha512-717Bmbs1Y2h0KrPIwrutxI/HwdqKlga1a1OHlL5TrRbN35IxHeY3GilqvyI/92n7RxFGa/AQhIajX0OL+FJkvw=="],
 
@@ -382,6 +382,8 @@
 
     "eventsource-parser": ["eventsource-parser@3.1.0", "", {}, "sha512-kJezFj9YFAMLeORyi7aCLxLbD5/qWMQnoMVlVPyHIll7lgRJCc3JVln9Vgl9nwQi0YkMnhdGTMNn7CkRRAptMg=="],
 
+    "evlog": ["evlog@2.24.0", "", { "peerDependencies": { "@nestjs/common": ">=11.1.28", "@nuxt/kit": "^4.4.2", "@orpc/server": ">=1.14.8", "@tanstack/start-client-core": "^1.170.14", "ai": ">=6.0.168 <8.0.0", "elysia": ">=1.4.29", "eve": ">=0.24.3", "express": ">=5.2.1", "fastify": ">=5.10.0", "h3": "^1.15.11", "hono": ">=4.12.30", "next": ">=16.2.10", "nitro": "^3.0.260311-beta", "nitropack": "^2.13.4", "ofetch": "^1.5.1", "react": ">=19.2.7", "react-router": ">=7.18.1", "vite": "^7.0.0 || ^8.0.0" }, "optionalPeers": ["@nestjs/common", "@nuxt/kit", "@orpc/server", "@tanstack/start-client-core", "ai", "elysia", "eve", "express", "fastify", "h3", "hono", "next", "nitro", "nitropack", "ofetch", "react", "react-router", "vite"] }, "sha512-sfxb/nwGIqCBk0UeFezNMxRtGZaf4y70PEYECQGIMJVEYuzjAsHn2LouiMiattfE57ygc8TqolJSDjc0imTJRw=="],
+
     "fast-xml-builder": ["fast-xml-builder@1.2.0", "", { "dependencies": { "path-expression-matcher": "^1.5.0", "xml-naming": "^0.1.0" } }, "sha512-00aAWieqff+ZJhsXA4g1g7M8k+7AYoMUUHF+/zFb5U6Uv/P0Vl4QZo84/IcufzYalLuEj9928bXN9PbbFzMF0Q=="],
 
     "fast-xml-parser": ["fast-xml-parser@5.7.3", "", { "dependencies": { "@nodable/entities": "^2.1.0", "fast-xml-builder": "^1.1.7", "path-expression-matcher": "^1.5.0", "strnum": "^2.2.3" }, "bin": { "fxparser": "src/cli/cli.js" } }, "sha512-C0AaNuC+mscy6vrAQKAc/rMq+zAPHodfHGZu4sGVehvAQt/JLG1O5zEcYcXSY5zSqr4YVgxsB+pHXTq0i7eDlg=="],
@@ -389,8 +391,6 @@
     "fsevents": ["fsevents@2.3.3", "", { "os": "darwin" }, "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw=="],
 
     "get-tsconfig": ["get-tsconfig@4.14.0", "", { "dependencies": { "resolve-pkg-maps": "^1.0.0" } }, "sha512-yTb+8DXzDREzgvYmh6s9vHsSVCHeC0G3PI5bEXNBHtmshPnO+S5O7qgLEOn0I5QvMy6kpZN8K1NKGyilLb93wA=="],
-
-    "groq-sdk": ["groq-sdk@1.1.2", "", { "bin": { "groq-sdk": "bin/cli" } }, "sha512-CZO0XUQQDhn43ri1+lZHxZKpb+bGutgTvFmCJtooexiitGmPqhm1hntOT3nCoaq07e+OpeokVnfUs0i/oQuUaQ=="],
 
     "hono": ["hono@4.12.12", "", {}, "sha512-p1JfQMKaceuCbpJKAPKVqyqviZdS0eUxH9v82oWo1kb9xjQ5wA6iP3FNVAPDFlz5/p7d45lO+BpSk1tuSZMF4Q=="],
 

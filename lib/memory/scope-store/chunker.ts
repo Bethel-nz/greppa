@@ -3,7 +3,6 @@ export const CHUNK_OVERLAP_CHARS = 150
 
 export type ChunkOptions = { targetChars?: number; overlapChars?: number }
 
-/** Split on paragraphs, then sentences, then a hard cut, in that order. */
 function segment(text: string, max: number): string[] {
   const out: string[] = []
   for (const para of text.split(/\n{2,}/)) {
@@ -35,11 +34,6 @@ function segment(text: string, max: number): string[] {
   return out
 }
 
-/**
- * Split text into retrieval-sized chunks. Long documents embedded whole average
- * into an unusable vector, so webpages and PDFs must be chunked before
- * embedding. Short notes and chat messages fall through as a single chunk.
- */
 export function chunkText(text: string, opts: ChunkOptions = {}): string[] {
   const target = opts.targetChars ?? CHUNK_TARGET_CHARS
   const overlap = opts.overlapChars ?? CHUNK_OVERLAP_CHARS

@@ -11,8 +11,6 @@ const dec = new TextDecoder()
 const enc = new TextEncoder()
 const dirs: string[] = []
 
-// The storage layer is scope-agnostic: callers pass a full object key. Tests use
-// a stable per-"user" key to mirror real usage (scopes/{id}/memory.sqlite).
 const K = (id: string) => `users/${id}/memory.sqlite`
 
 async function cacheDir(): Promise<string> {
@@ -68,8 +66,6 @@ describe('Checkpoint', () => {
     const storage = new MemoryStorage()
     const cp = new Checkpoint({ storage, cacheDir: await cacheDir(), maxOpen: 8, idleMs: 1000 })
 
-    // Callback that writes nothing must surface as an error (no 0-byte upload of a
-    // "created" file the way the old pre-create path would have allowed).
     await expect(cp.write(K('u1'), async () => {})).rejects.toBeTruthy()
     expect(storage.counts.put).toBe(0)
   })
@@ -88,7 +84,6 @@ describe('Checkpoint', () => {
       seen.push(dec.decode(await readFile(p)))
     })
 
-    // Publish a new immutable generation while the read is mid-flight.
     await cp.write(K('u1'), async (p) => writeFile(p, enc.encode('v2')))
     release()
     await reading
@@ -275,7 +270,6 @@ describe('Checkpoint', () => {
     await rm(cachedPath)
     await expect(cp.read(K('u1'), async (p) => readFile(p))).rejects.toBeTruthy()
 
-    // The failed read must not pin the entry open forever.
     clock += 1000
     await cp.evictIdle()
     expect(cp.openCount).toBe(0)
@@ -327,7 +321,6 @@ describe('Checkpoint', () => {
     await cp.write(K('u1'), async (p) => writeFile(p, enc.encode('12345')))
     expect(cp.cacheBytes).toBe(5)
 
-    // Overwriting recharges rather than double-counting.
     await cp.write(K('u1'), async (p) => writeFile(p, enc.encode('1234567890')))
     expect(cp.cacheBytes).toBe(10)
 
@@ -354,7 +347,6 @@ describe('Checkpoint', () => {
   test('maxCacheBytes evicts LRU entries even when maxOpen is not reached', async () => {
     const storage = new MemoryStorage()
     let clock = 1000
-    // Room for two 10-byte scopes, not three. maxOpen is deliberately generous.
     const cp = new Checkpoint({
       storage,
       cacheDir: await cacheDir(),
@@ -373,7 +365,6 @@ describe('Checkpoint', () => {
     expect(cp.openCount).toBe(2)
     expect(cp.overBudget).toBe(false)
 
-    // The evicted scope re-hydrates from storage rather than being lost.
     const v = await cp.read(K('u1'), async (p) => dec.decode(await readFile(p)))
     expect(v).toBe('0123456789')
   })
@@ -384,8 +375,6 @@ describe('Checkpoint', () => {
     await cp.write(K('u1'), async (p) => writeFile(p, enc.encode('0123456789')))
     await cp.write(K('u2'), async (p) => writeFile(p, enc.encode('0123456789')))
 
-    // Both scopes must be pinned at the same time; a read that has already
-    // finished is legitimately evictable and would hide the overage.
     let releaseA!: () => void
     let releaseB!: () => void
     const gateA = new Promise<void>((r) => (releaseA = r))
@@ -395,7 +384,6 @@ describe('Checkpoint', () => {
     const readA = cp.read(K('u1'), async (p) => {
       held.push(dec.decode(await readFile(p)))
       await gateA
-      // Still readable: the byte budget must not delete a pinned generation.
       held.push(dec.decode(await readFile(p)))
     })
     const readB = cp.read(K('u2'), async () => {
@@ -411,7 +399,6 @@ describe('Checkpoint', () => {
     await Promise.all([readA, readB])
     expect(held).toEqual(['0123456789', '0123456789'])
 
-    // Releasing the pins lets the budget be satisfied again.
     expect(cp.cacheBytes).toBeLessThanOrEqual(12)
     expect(cp.overBudget).toBe(false)
   })
@@ -428,7 +415,6 @@ describe('Checkpoint', () => {
     })
     await new Promise((r) => setTimeout(r, 5))
 
-    // Publishing v2 retires v1, but v1 is pinned: both are charged.
     await cp.write(K('u1'), async (p) => writeFile(p, enc.encode('bbbbbbbbbb')))
     expect(cp.cacheBytes).toBe(15)
 
@@ -464,7 +450,6 @@ describe('sweepOrphans', () => {
     const dir = await cacheDir()
     const stale = join(dir, 'users/u1')
     await mkdir(stale, { recursive: true })
-    // Simulate a crashed run: generation files with an old mtime.
     const old = new Date(Date.now() - 6 * 60 * 60_000)
     for (const name of [
       'memory.sqlite.generation-11111111-1111-1111-1111-111111111111',
@@ -488,8 +473,6 @@ describe('sweepOrphans', () => {
     const cp = new Checkpoint({ storage: new MemoryStorage(), cacheDir: dir, maxOpen: 8, idleMs: 10_000 })
     await cp.write(K('u1'), async (p) => writeFile(p, enc.encode('live')))
 
-    // minAgeMs 0 is the most aggressive sweep possible; our own live
-    // generation must still survive because it is newer than startedAt.
     const swept = await cp.sweepOrphans({ minAgeMs: 0 })
     expect(swept.removed).toBe(0)
     expect(await cp.read(K('u1'), async (p) => dec.decode(await readFile(p)))).toBe('live')
@@ -499,8 +482,6 @@ describe('sweepOrphans', () => {
     const dir = await cacheDir()
     const recent = join(dir, 'users/u2')
     await mkdir(recent, { recursive: true })
-    // Written before the Checkpoint below is constructed, but only moments ago —
-    // this is what a concurrent process's live generation looks like from here.
     const p = join(recent, 'memory.sqlite.generation-44444444-4444-4444-4444-444444444444')
     await writeFile(p, enc.encode('another process is using this'))
 

@@ -1,10 +1,5 @@
 import { mock } from 'bun:test'
 
-// Shared in-memory mocks for redis and realtime so test files do not race
-// each other through Bun's process-wide mock.module registry. Tests must
-// import this file BEFORE importing any module that depends on lib/redis,
-// lib/realtime, or lib/workflow.
-
 export const fakeRedis: Record<string, any> = {}
 export const zsets: Record<string, Array<{ score: number; member: string }>> = {}
 

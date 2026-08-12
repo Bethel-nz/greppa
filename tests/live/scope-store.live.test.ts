@@ -1,13 +1,3 @@
-/**
- * Live scope-store suite. Real Cloudflare R2, real SQLite + sqlite-vec, no mocks.
- *
- *   CHECKPOINT_LIVE_R2=1 bun test tests/live
- *
- * Uses the deterministic embedding provider on purpose: this suite is about the
- * storage integration — that a SQLite file survives Checkpoint's hydrate, seal,
- * upload and conflict-rerun paths — not about retrieval quality, which is
- * covered offline. Skipped entirely without CHECKPOINT_LIVE_R2=1.
- */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
@@ -24,7 +14,6 @@ import { LIVE, liveStorage, purgePrefix, runPrefix } from './support'
 const TIMEOUT_MS = 300_000
 const dirs: string[] = []
 
-/** sha256 of a file, streamed — never materializes the file in the JS heap. */
 async function fileHash(path: string): Promise<string> {
   const hash = createHash('sha256')
   for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer)
@@ -78,8 +67,6 @@ describe.skipIf(!LIVE)('scope store (live R2)', () => {
       await write(cpA, key, 'pets', 'the domestic cat is a carnivorous mammal')
       await write(cpA, key, 'finance', 'quarterly revenue invoice reconciliation')
 
-      // A cold instance proves the bytes survived the R2 round trip and that a
-      // SQLite file is still a valid database after hydration.
       const cpB = new Checkpoint({ storage, cacheDir: await scratch('b'), maxOpen: 8, idleMs: 300_000 })
       const [qv] = await provider.embed(['carnivorous mammal'], 'query')
       const hits = await cpB.read(key, async (path) => {
@@ -130,8 +117,6 @@ describe.skipIf(!LIVE)('scope store (live R2)', () => {
 
       await Promise.all([cpA.write(key, append('alphamarker')), cpB.write(key, append('betamarker'))])
 
-      // Exactly one writer lost the compare-and-set and reran against a freshly
-      // hydrated SQLite file. This is the property the whole design rests on.
       expect(attempts).toBe(3)
 
       const cpC = new Checkpoint({ ...cfg, cacheDir: await scratch('c3') })
@@ -216,7 +201,6 @@ describe.skipIf(!LIVE)('scope store (live R2)', () => {
       await write(cp, key, 'v2', 'second generation payload')
       release()
 
-      // The reader saw one immutable file throughout, unaffected by the writer.
       expect(await reading).toBe(1)
       expect(sizes[0]).toBe(sizes[1]!)
 

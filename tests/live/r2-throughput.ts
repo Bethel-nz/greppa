@@ -1,14 +1,3 @@
-/**
- * Raw R2 link probe. NOT the benchmark.
- *
- *   CHECKPOINT_LIVE_R2=1 MB=42 bun run tests/live/r2-throughput.ts
- *
- * Uploads and downloads a random blob to establish this machine's ceiling, so
- * the transfer numbers in checkpoint-bench.ts can be read as "Checkpoint hit
- * line rate" or "Checkpoint added overhead" rather than guessed at. Random
- * bytes are correct here precisely because this measures the link and nothing
- * about Memvid.
- */
 import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

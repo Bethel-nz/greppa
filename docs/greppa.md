@@ -8,7 +8,7 @@
 greppa/
 ├── sumi.config.ts          # Server config (port, basePath, CORS, OpenAPI, Scalar docs)
 ├── routes/                 # File-based API routes (chat, knowledge, session, orgs, auth, workflows)
-├── middleware/             # CORS, session-auth, user-auth, chat-auth, rate-limit
+├── middleware/             # CORS, session-auth, user-auth, rate-limit
 ├── lib/                    # Core: config, auth, db, redis, realtime, emit, hmac, security, groq, workflow
 │   ├── memory/             # Memory layer: service, ACL, scoped service, queue, R2 sync, memvid, stats
 │   ├── knowledge/          # Ingestion pipeline: parsers (text, HTML), routing, progress tracking
@@ -85,11 +85,11 @@ class ChatHandle {
 ```typescript
 class KnowledgeNamespace {
   list(): Promise<{ articles: Article[]; total: number }>
-  ingest(input: { title: string; content: string; tags?: string[] }): Promise<{ frameId, title, wordCount, message }>
-  upload(input: { file: Blob; title: string; tags?: string[] }): Promise<{ frameId, title, wordCount | null, message }>
-  get(frameId: string): Promise<Article>
-  update(frameId: string, patch: Partial<{ title: string; tags: string[] }>): Promise<Article>
-  delete(frameId: string): Promise<{ deleted: boolean }>
+  ingest(input: { title: string; content: string; tags?: string[] }): Promise<IngestResult>
+  upload(input: { file: Blob; title: string; tags?: string[] }): Promise<IngestResult & { wordCount: number }>
+  get(documentId: string): Promise<Article>
+  update(documentId: string, patch: Partial<{ title: string; tags: string[] }>): Promise<Article>
+  delete(documentId: string): Promise<{ deleted: boolean }>
 }
 ```
 

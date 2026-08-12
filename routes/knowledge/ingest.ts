@@ -4,7 +4,10 @@ import { resolver } from 'hono-openapi/zod'
 import { createIngestionJob } from '~/lib/knowledge/services/progress.service'
 import { drizzle, schema } from '~/lib/db'
 import { triggerIngestWorkflow } from '../../lib/workflow'
+import { deleteUpload, headUploadedSize } from '~/lib/memory/presign'
+import { formatBytes, maxUploadBytes } from '~/lib/memory/upload-limits'
 
+import { authErrors, knowledgeErrors, withDetail } from '../../lib/errors'
 const bodySchema = z.object({
   key: z.string().min(1).describe('R2 object key returned from /knowledge/presign'),
   title: z.string().min(1).describe('Document title'),
@@ -25,13 +28,31 @@ export default createRoute({
     handler: async (c) => {
       const userId = c.get('userId')
       if (!userId) {
-        return c.json({ error: 'authentication required' }, 401)
+        throw authErrors.REQUIRED()
       }
 
       const { key, title, orgId, mimeType } = c.req.valid('json')
       const fileName = key.split('/').pop() ?? 'unknown'
 
-      // Create document record
+      const uploadedBytes = await headUploadedSize(key)
+      if (uploadedBytes === null) {
+        throw knowledgeErrors.UPLOAD_MISSING()
+      }
+      const ceiling = maxUploadBytes()
+
+      if (uploadedBytes > ceiling) {
+        await deleteUpload(key).catch((err) =>
+          console.warn('[knowledge] could not remove oversized upload', key, err),
+        )
+        throw withDetail(
+          knowledgeErrors.TOO_LARGE({
+            size: formatBytes(uploadedBytes),
+            limit: formatBytes(ceiling),
+          }),
+          { limitBytes: ceiling },
+        )
+      }
+
       const documentId = crypto.randomUUID()
       await drizzle.insert(schema.documents).values({
         id: documentId,
@@ -45,7 +66,6 @@ export default createRoute({
         status: 'pending',
       })
 
-      // Create ingestion job
       const { id: jobId } = await createIngestionJob({
         orgId,
         userId,
@@ -56,7 +76,6 @@ export default createRoute({
         r2Key: key,
       })
 
-      // Trigger async workflow
       await triggerIngestWorkflow({
         jobId,
         orgId,
@@ -67,6 +86,7 @@ export default createRoute({
         fileName,
         title,
       })
+
 
       return c.json({
         jobId,
@@ -85,6 +105,8 @@ export default createRoute({
           content: { 'application/json': { schema: resolver(responseSchema) } },
         },
         401: { description: 'Authentication required' },
+        404: { description: 'No uploaded object at that key' },
+        413: { description: 'Uploaded file exceeds the upload limit' },
       },
     },
   },

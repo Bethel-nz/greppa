@@ -1,7 +1,7 @@
 import { serve } from '@upstash/workflow/hono'
 import { createRoute } from '@bethel-nz/sumi/router'
-import { GetObjectCommand } from '@aws-sdk/client-s3'
-import { r2, R2_BUCKET } from '~/lib/memory/r2'
+import { getStorage } from '~/lib/storage'
+import { extractEdges } from '~/lib/memory/extract-edges'
 import { parseText } from '~/lib/knowledge/parsers/text.parser'
 import { parseHtml } from '~/lib/knowledge/parsers/html.parser'
 import { parseAnyDoc } from '~/lib/knowledge/parsers/anydoc.parser'
@@ -25,7 +25,6 @@ const workflowHandler = serve(async (workflow) => {
   const { jobId, orgId, userId, documentId, r2Key, contentType, fileName, title } = payload
 
   try {
-    // Step 1: Verify job exists
     await workflow.run('verify', async () => {
       const job = await getIngestionJob(jobId, orgId)
       if (!job) throw new Error(`Job ${jobId} not found`)
@@ -43,7 +42,6 @@ const workflowHandler = serve(async (workflow) => {
       return { ok: true }
     })
 
-    // Step 2: Download from R2
     const fileBuffer = await workflow.run('download', async () => {
       await updateJobProgress({
         jobId,
@@ -55,20 +53,9 @@ const workflowHandler = serve(async (workflow) => {
         message: 'Downloading file from storage',
       })
 
-      const result = await r2.send(
-        new GetObjectCommand({
-          Bucket: R2_BUCKET,
-          Key: r2Key,
-        }),
-      )
-
-      if (!result.Body) {
-        throw new Error('R2 object has no body')
-      }
-
-      const chunks: Buffer[] = []
-      for await (const chunk of result.Body as any) {
-        chunks.push(Buffer.from(chunk))
+      const object = await getStorage().get(r2Key)
+      if (!object) {
+        throw new Error(`Upload ${r2Key} is missing from storage`)
       }
 
       await updateJobProgress({
@@ -81,10 +68,9 @@ const workflowHandler = serve(async (workflow) => {
         message: 'File downloaded from storage',
       })
 
-      return Buffer.concat(chunks)
+      return Buffer.from(object.body)
     })
 
-    // Step 3: Route and parse
     const strategy = resolveIngestionStrategy(contentType, fileName)
 
     if (strategy === 'unsupported') {
@@ -155,7 +141,28 @@ const workflowHandler = serve(async (workflow) => {
       message: `Content parsed (${strategy})`,
     })
 
-    // Step 4: Call internal commit endpoint (Railway owns the .mv2 file)
+    // Its own step so a retried commit does not pay for extraction twice.
+    commitPayload.edges = await workflow.run('extract-edges', async () => {
+      const edges = await extractEdges({
+        title: String(commitPayload.title ?? title),
+        text: String(commitPayload.text ?? ''),
+      })
+
+      await updateJobProgress({
+        jobId,
+        orgId,
+        documentId,
+        status: 'processing',
+        progress: 45,
+        type: 'graph.extract.completed',
+        message: edges.length
+          ? `Found ${edges.length} relationship${edges.length === 1 ? '' : 's'}`
+          : 'No relationships found',
+      })
+
+      return edges
+    })
+
     const commitResult = await workflow.run('commit', async () => {
       await updateJobProgress({
         jobId,
@@ -199,7 +206,6 @@ const workflowHandler = serve(async (workflow) => {
       return data as { documentId: string; status: string }
     })
 
-    // Step 5: Finalize
     await workflow.run('finalize', async () => {
       await updateJobProgress({
         jobId,
@@ -215,7 +221,6 @@ const workflowHandler = serve(async (workflow) => {
 
     return commitResult
   } catch (err: any) {
-    // Final failure handler — mark job and document as failed
     await updateJobProgress({
       jobId,
       orgId,

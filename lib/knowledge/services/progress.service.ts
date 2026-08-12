@@ -1,4 +1,4 @@
-import { eq, and, sql, count } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { drizzle, schema } from '~/lib/db'
 
 export type ProgressUpdateInput = {
@@ -37,32 +37,10 @@ export async function updateJobProgress(input: ProgressUpdateInput) {
   })
 }
 
-export async function listJobEvents(jobId: string, orgId: string) {
-  return drizzle
-    .select()
-    .from(schema.ingestionJobEvents)
-    .where(
-      and(
-        eq(schema.ingestionJobEvents.jobId, jobId),
-        eq(schema.ingestionJobEvents.orgId, orgId),
-      ),
-    )
-    .orderBy(schema.ingestionJobEvents.createdAt)
-}
-
 export async function getIngestionJob(jobId: string, orgId: string) {
   return drizzle.query.ingestionJobs.findFirst({
     where: (j, { and, eq }) => and(eq(j.id, jobId), eq(j.orgId, orgId)),
   })
-}
-
-export async function getPendingJobs(limit: number = 10) {
-  return drizzle
-    .select()
-    .from(schema.ingestionJobs)
-    .where(eq(schema.ingestionJobs.status, 'pending'))
-    .orderBy(schema.ingestionJobs.createdAt)
-    .limit(limit)
 }
 
 export async function createIngestionJob(input: {

@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { createRoute } from "@bethel-nz/sumi/router";
 import { resolver } from "hono-openapi/zod";
-import { getDocumentByFrameId, updateDocument, softDeleteDocument } from "../../lib/knowledge/services/knowledge.service";
+import { getDocumentById, updateDocument, softDeleteDocument } from "../../lib/knowledge/services/knowledge.service";
 
-const paramSchema = z.object({ frameId: z.string() });
+import { knowledgeErrors, requestErrors } from '../../lib/errors'
+const paramSchema = z.object({ documentId: z.string() });
 
 const articleSchema = z.object({
   documentId: z.string(),
@@ -27,15 +28,15 @@ export default createRoute({
     schema: { param: paramSchema },
     middleware: ["user-auth", "rate-limit"],
     handler: async (c) => {
-      const { frameId } = c.req.valid("param");
+      const { documentId } = c.req.valid("param");
       const orgId = c.req.query('orgId')
       if (!orgId) {
-        return c.json({ error: 'orgId query param required' }, 400)
+        throw requestErrors.ORG_ID_REQUIRED()
       }
 
-      const doc = await getDocumentByFrameId(frameId, orgId)
+      const doc = await getDocumentById(documentId, orgId)
       if (!doc || doc.status === 'deleted') {
-        return c.json({ error: "Not found" }, 404);
+        throw knowledgeErrors.NOT_FOUND()
       }
 
       return c.json({
@@ -70,17 +71,17 @@ export default createRoute({
     schema: { param: paramSchema, json: patchSchema },
     middleware: ["user-auth", "rate-limit"],
     handler: async (c) => {
-      const { frameId } = c.req.valid("param");
+      const { documentId } = c.req.valid("param");
       const orgId = c.req.query('orgId')
       if (!orgId) {
-        return c.json({ error: 'orgId query param required' }, 400)
+        throw requestErrors.ORG_ID_REQUIRED()
       }
 
       const patch = c.req.valid("json");
-      const updated = await updateDocument(frameId, orgId, patch);
+      const updated = await updateDocument(documentId, orgId, patch);
 
       if (!updated) {
-        return c.json({ error: "Not found" }, 404);
+        throw knowledgeErrors.NOT_FOUND()
       }
 
       return c.json({
@@ -108,15 +109,15 @@ export default createRoute({
     schema: { param: paramSchema },
     middleware: ["user-auth", "rate-limit"],
     handler: async (c) => {
-      const { frameId } = c.req.valid("param");
+      const { documentId } = c.req.valid("param");
       const orgId = c.req.query('orgId')
       if (!orgId) {
-        return c.json({ error: 'orgId query param required' }, 400)
+        throw requestErrors.ORG_ID_REQUIRED()
       }
 
-      const deleted = await softDeleteDocument(frameId, orgId);
+      const deleted = await softDeleteDocument(documentId, orgId);
       if (!deleted) {
-        return c.json({ error: "Not found" }, 404);
+        throw knowledgeErrors.NOT_FOUND()
       }
 
       return c.json({ message: "Article deleted" });

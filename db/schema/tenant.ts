@@ -29,7 +29,6 @@ export const memberships = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
   },
   (table) => ({
-    // One membership per (user, org) so ACL resolution can never pick a wrong/duplicate row.
     userOrgUnique: uniqueIndex('membership_user_org_unique').on(table.userId, table.orgId),
     orgIdx: index('membership_org_idx').on(table.orgId),
   }),
@@ -48,6 +47,8 @@ export const documents = pgTable(
     title: text('title').notNull(),
     sourceType: text('source_type').notNull(),
     sourceUrl: text('source_url'),
+    workspaceId: text('workspace_id'),
+    folderId: text('folder_id'),
     status: text('status').notNull().default('pending'),
     deletedAt: timestamp('deleted_at', { withTimezone: true, mode: 'date' }),
     r2Key: text('r2_key'),
@@ -64,6 +65,7 @@ export const documents = pgTable(
     orgIdx: index('documents_org_idx').on(table.orgId),
     ownerIdx: index('documents_owner_idx').on(table.ownerUserId),
     statusIdx: index('documents_status_idx').on(table.status),
+    placementIdx: index('documents_placement_idx').on(table.workspaceId, table.folderId),
   }),
 )
 
@@ -144,12 +146,6 @@ export const ingestionJobs = pgTable(
   }),
 )
 
-/**
- * A scope is one isolated Memvid file (stored at scopes/{id}/memory.mv2 in R2).
- * Phase 1: every user has exactly one personal scope. The storage layer is
- * scope-agnostic; ownership and sharing live here, not in the object key, so a
- * personal scope can later become a shared workspace without moving the file.
- */
 export const scopes = pgTable(
   'scopes',
   {
@@ -163,7 +159,6 @@ export const scopes = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
   },
   (table) => ({
-    // One scope per (owner, name) so getOrCreatePersonalScope is idempotent under races.
     ownerNameUnique: uniqueIndex('scope_owner_name_unique').on(table.ownerUserId, table.name),
     ownerIdx: index('scopes_owner_idx').on(table.ownerUserId),
   }),

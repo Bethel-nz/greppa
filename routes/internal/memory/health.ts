@@ -33,8 +33,6 @@ export default createRoute({
       const cache = getMemoryCacheStats()
       const workerStats = await checkWorker()
 
-      // No single memory file exists to check any more; memory is per-scope and
-      // hydrated on demand, so R2 reachability is the meaningful storage signal.
       const status = neonOk && r2Ok.ok && !cache.overBudget ? 'ok' : 'degraded'
 
       return c.json({
@@ -74,17 +72,11 @@ async function checkNeon(): Promise<boolean> {
   }
 }
 
-/**
- * Reachability only. There is no single memory object to probe: memory is one
- * database per scope, so a missing object for any given scope is normal (that
- * scope simply has no memories yet). A successful list proves credentials and
- * connectivity, which is what a health check can meaningfully assert.
- */
 async function checkR2(): Promise<{ ok: boolean; bucket: string }> {
   const bucket = process.env.R2_BUCKET ?? 'greppa-memory'
   try {
-    const { R2Storage } = await import('~/utils/r2')
-    await R2Storage.fromEnv().list('scopes/')
+    const { getStorage } = await import('~/lib/storage')
+    await getStorage().list('scopes/')
     return { ok: true, bucket }
   } catch {
     return { ok: false, bucket }

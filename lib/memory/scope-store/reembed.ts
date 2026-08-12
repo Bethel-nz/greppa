@@ -3,7 +3,6 @@ import { type EmbeddingProvider, embedInBatches } from '../embedding/provider'
 import { writeIdentity } from './schema'
 
 export type ReembedOptions = {
-  /** Fetch original image bytes so image chunks can be re-embedded. */
   getAsset?: (sha256: string) => Promise<{ bytes: Uint8Array; mime: string } | null>
 }
 
@@ -15,17 +14,6 @@ type ChunkRow = {
   asset_mime: string | null
 }
 
-/**
- * Rebuild every vector under a new provider.
- *
- * Only the derived vectors change: documents, chunks, chunks_fts and every
- * asset are untouched, so BM25 search keeps working throughout and no source is
- * re-fetched. vec0 cannot be altered in place, so the table is dropped and
- * recreated at the new dimension.
- *
- * Call this inside a single Checkpoint.write so the migration is atomic,
- * compare-and-set protected, and costs one upload.
- */
 export async function reembedScope(
   db: Database,
   next: EmbeddingProvider,
@@ -37,9 +25,6 @@ export async function reembedScope(
 
   const vectors = new Map<number, Float32Array>()
 
-  // Embedding happens before the transaction: it is network-bound, and holding
-  // a write transaction open across it would serialise the whole file on a
-  // remote API's latency.
   const textChunks = chunks.filter((c) => c.modality !== 'image')
   if (textChunks.length) {
     const embedded = await embedInBatches(next, textChunks.map((c) => c.text), 'document')

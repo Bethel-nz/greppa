@@ -27,7 +27,6 @@ export default createRoute({
           { ex: ttlS },
         )
       } catch {
-        // redis-down case: still issue the session; verification will fail later if needed.
       }
       return c.json({ sessionId, ttlMs: cfg.sessionTtlMs })
     },

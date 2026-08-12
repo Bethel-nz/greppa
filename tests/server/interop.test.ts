@@ -62,10 +62,6 @@ describe('SDK <-> Server Interop', () => {
     })
 
     const handle = greppa.chat.send('hello interop')
-    // wait for the underlying POST /chat to land before reading state.
-    // wrapPendingHandle defers the actual send into a microtask; awaiting
-    // the messageId via abort() forces resolution of the pending promise
-    // chain without consuming the stream.
     await new Promise((r) => setTimeout(r, 10))
     handle.abort()
 
@@ -110,11 +106,9 @@ describe('SDK <-> Server Interop', () => {
       { score: 4, member: JSON.stringify({ id: '4', seq: 4, type: 'done',  data: { messageId: mid, message: 'abc', model: 'm', at: 4 } }) },
     ]
 
-    const { greppa } = await seededGreppa(request, sid)
-    const baseFetch = (greppa as any).chat.fetchImpl as typeof fetch
+    const { store } = await seededGreppa(request, sid)
+    const baseFetch = createInteropFetch(request)
 
-    // Inject `last-event-id: e2` only on the stream call. The server should
-    // skip e1 and e2 in its replay and start from e3.
     const fetchWithResume: typeof fetch = (async (input, init) => {
       const url = typeof input === 'string' ? input : (input as URL).toString()
       if (url.includes('/chat/stream')) {
@@ -128,7 +122,7 @@ describe('SDK <-> Server Interop', () => {
     const greppaResume = new Greppa({
       baseUrl: 'http://localhost/api/v1',
       fetch: fetchWithResume,
-      sessionStore: (greppa.chat as any).store,
+      sessionStore: store,
     })
 
     const handle = greppaResume.chat.resume(mid)
@@ -144,14 +138,10 @@ describe('SDK <-> Server Interop', () => {
     const mid = '01HFOREIGN'
 
     fakeRedis[`msg:${mid}:meta`] = { conversationId: ownerSid, status: 'done' }
-    // No need to seed channel events - the route rejects on session mismatch
-    // before subscribing.
 
     const { greppa } = await seededGreppa(request, otherSid)
 
     const handle = greppa.chat.resume(mid)
-    // The SDK rejects handle.done when the stream ends in error. Attach a
-    // catch up-front so Bun does not report it as an unhandled rejection.
     handle.done.catch(() => {})
 
     let errorSeen: { code: string; reason: string } | null = null
@@ -160,7 +150,6 @@ describe('SDK <-> Server Interop', () => {
         if (ev.type === 'error') errorSeen = ev.data
       }
     } catch {
-      // GreppaError thrown by the events iterator after the error event
     }
 
     expect(errorSeen?.code).toBe('not_found')

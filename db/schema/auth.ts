@@ -19,7 +19,6 @@ export const user = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 
-    // Additional fields aligned with Better Auth additionalFields config
     username: text('username').notNull().default(''),
     firstName: text('first_name'),
     lastName: text('last_name'),

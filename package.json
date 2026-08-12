@@ -13,14 +13,14 @@
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "sdk:build": "cd packages/sdk && bun run build",
-    "sdk:test": "cd packages/sdk && bun test"
+    "sdk:build": "cd packages/greppa-sdk && bun run build",
+    "sdk:test": "cd packages/greppa-sdk && bun test"
   },
   "dependencies": {
     "@ai-sdk/groq": "^4.0.1",
     "@aws-sdk/client-s3": "^3.1053.0",
     "@aws-sdk/s3-request-presigner": "^3.1053.0",
-    "@bethel-nz/sumi": "1.3.1",
+    "@bethel-nz/sumi": "1.4.0",
     "@better-auth/api-key": "^1.6.11",
     "@better-auth/drizzle-adapter": "^1.6.11",
     "@firecrawl/anydoc": "^0.1.6",
@@ -36,7 +36,7 @@
     "better-auth": "^1.6.11",
     "cheerio": "^1.2.0",
     "drizzle-orm": "^0.45.2",
-    "groq-sdk": "^1.1.2",
+    "evlog": "^2.24.0",
     "hono": "^4.12.12",
     "hono-openapi": "^0.4.8",
     "html-to-text": "^10.0.0",

@@ -30,7 +30,6 @@ beforeEach(() => {
   clearRealtimeState()
 })
 
-// Seed a durable log; unique token letters let us assert which events replayed.
 function seedLog(sid: string, messageId: string, includeDone = true) {
   fakeRedis[`msg:${messageId}:meta`] = { conversationId: sid, status: includeDone ? 'done' : 'generating' }
   const events = [
@@ -75,8 +74,6 @@ describe('chat stream resume', () => {
   test('unparseable (legacy ULID) cursor triggers a full replay', async () => {
     seedLog(sid, mid)
     const { text } = await stream(sid, mid, '01HXXXOLDULIDXXXXXXXXXXXXX1')
-    // A ULID starting with digits must not partial-parse to a seq; seq 1 (the cue)
-    // must still be replayed.
     expect(text).toContain('id: 1')
     expect(text).toContain('AAA')
     expect(text).toContain('CCC')
@@ -108,15 +105,12 @@ describe('chat stream resume', () => {
   test('stalled stream emits a stalled error within the bound', async () => {
     process.env.GREPPA_RESUME_WINDOW_MS = '150'
     _resetGreppaConfigForTests()
-    seedLog(sid, mid, false) // no terminal event, no live producer
+    seedLog(sid, mid, false) 
     const { text } = await stream(sid, mid)
     expect(text).toContain('event: cue')
     expect(text).toContain('"code":"stalled"')
   })
 
-  // Regression: real Upstash auto-deserializes JSON members, so zrange returns
-  // objects, not strings. The replay path previously JSON.parse'd them and threw,
-  // breaking resume in production while the string-returning mock stayed green.
   test('replays when the store returns already-deserialized object members', async () => {
     fakeRedis[`msg:${mid}:meta`] = { conversationId: sid, status: 'done' }
     zsets[`msg:${mid}:events`] = [
@@ -126,8 +120,8 @@ describe('chat stream resume', () => {
       { score: 4, member: { id: '4', seq: 4, type: 'done', data: { messageId: mid } } },
     ] as any
     const { text } = await stream(sid, mid, '2')
-    expect(text).not.toContain('AAA') // seq 2 <= cursor, not replayed
-    expect(text).toContain('BBB') // seq 3 replayed cleanly (no parse crash)
+    expect(text).not.toContain('AAA') 
+    expect(text).toContain('BBB') 
     expect(text).toContain('event: done')
   })
 })

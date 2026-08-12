@@ -80,7 +80,6 @@ describe('decay in retrieval', () => {
       const [embedding] = await provider.embed([text], 'document')
       insertDocument(store, { title, text, sourceType: 'note', createdBy: 'u1', chunks: [{ text, embedding: embedding! }] })
     }
-    // Age 'old' by a year; both are otherwise identical.
     store.db.run("update chunks set created_at = ? where document_id = (select id from documents where title = 'old')", [Date.now() - 365 * DAY])
     return store
   }
@@ -89,7 +88,7 @@ describe('decay in retrieval', () => {
     const store = await seed(tmpPath())
     const [qv] = await provider.embed(['quarterly planning'], 'query')
     const scores = hybridSearch(store, 'quarterly planning', qv!, 10)
-    expect(new Set(scores.map((h) => h.score)).size).toBe(1) // identical
+    expect(new Set(scores.map((h) => h.score)).size).toBe(1) 
     store.close(); cleanup()
   })
 
@@ -122,7 +121,7 @@ describe('decay in retrieval', () => {
     recordAccess(store, [stale.chunkId])
 
     const after = hybridSearch(store, 'quarterly planning', qv!, 10, undefined, on())
-    expect(after[0]!.title).toBe('old') // recall made it fresh again
+    expect(after[0]!.title).toBe('old') 
     store.close(); cleanup()
   })
 

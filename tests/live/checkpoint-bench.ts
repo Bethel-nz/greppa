@@ -1,27 +1,3 @@
-/**
- * Checkpoint benchmark against a representative real scope-store SQLite file
- * and real R2.
- *
- *   CHECKPOINT_LIVE_R2=1 bun run tests/live/checkpoint-bench.ts
- *
- * Opt-in: refuses to run without CHECKPOINT_LIVE_R2=1 so ordinary test runs
- * never touch the network. Every knob is an env var and the corpus text is
- * deterministic, so two runs with the same settings are comparable.
- *
- *   BENCH_TARGET_BYTES     corpus size to build         (default 42 MiB)
- *   BENCH_WORDS_PER_FRAME  text per document            (default 320 ≈ 2 KiB)
- *   BENCH_DIM              embedding width              (default 1536)
- *   BENCH_CORPUS_PATH      reuse/persist the corpus     (default: temp, rebuilt)
- *   BENCH_WARM_SEARCHES    warm search iterations       (default 20)
- *   BENCH_SCOPES           scopes for the cache-budget leg (default 3)
- *   BENCH_MAX_OPEN         Checkpoint maxOpen           (default 8)
- *   BENCH_MAX_CACHE_BYTES  Checkpoint maxCacheBytes     (default: 1.5 × corpus)
- *   BENCH_JSON_OUT         write the full result as JSON to this path
- *
- * The corpus is a real scope-store database: sqlite-vec vectors plus an FTS5
- * index over deterministic text. Size grows linearly with document count, so
- * BENCH_TARGET_BYTES can be set to any value the disk will hold.
- */
 import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -70,17 +46,8 @@ const MAX_OPEN = envNum('BENCH_MAX_OPEN', 8)
 const BENCH_DIM = envNum('BENCH_DIM', 1536)
 const benchEmbedder = benchProvider(BENCH_DIM)
 
-// ---------------------------------------------------------------------------
-// storage instrumentation
-// ---------------------------------------------------------------------------
-
 type Call = { op: string; key: string; ms: number; bytes: number }
 
-/**
- * Wraps the real R2 backend and records per-call wall time and transferred
- * bytes, so the report can separate network time from Checkpoint bookkeeping.
- * Delegates verbatim; adds no buffering.
- */
 class TimedStorage implements StorageBackend {
   readonly calls: Call[] = []
 
@@ -95,7 +62,6 @@ class TimedStorage implements StorageBackend {
     }
   }
 
-  /** Total ms and bytes for one op since a marker index. */
   since(mark: number, op?: string): { ms: number; bytes: number; count: number } {
     let ms = 0
     let bytes = 0
@@ -148,10 +114,6 @@ class TimedStorage implements StorageBackend {
   }
 }
 
-// ---------------------------------------------------------------------------
-// reporting
-// ---------------------------------------------------------------------------
-
 type Stage = {
   name: string
   wallMs: number
@@ -190,24 +152,14 @@ async function scratch(label: string): Promise<string> {
   return d
 }
 
-/** Bytes Checkpoint believes it is holding, when the build exposes it. */
 function checkpointBytes(cp: Checkpoint): number | null {
   const v = (cp as unknown as { cacheBytes?: number }).cacheBytes
   return typeof v === 'number' ? v : null
 }
 
-/**
- * The same script has to run against the pre-maxCacheBytes baseline and against
- * the build that adds it, so the extra field is attached structurally. Builds
- * that do not know the option ignore it.
- */
 function checkpointConfig(cacheDir: string, maxCacheBytes: number): CheckpointConfig {
   return { storage, cacheDir, maxOpen: MAX_OPEN, idleMs: 300_000, maxCacheBytes } as CheckpointConfig
 }
-
-// ---------------------------------------------------------------------------
-// run
-// ---------------------------------------------------------------------------
 
 const startedAt = new Date()
 const baseStorage = liveStorage()
@@ -224,7 +176,6 @@ let corpusPath = process.env.BENCH_CORPUS_PATH
 let corpus: { bytes: number; documents: number; buildMs: number } | null = null
 let reusedCorpus = false
 
-// ── 1. build the representative scope database ─────────────────────────────
 {
   const existing = corpusPath ? await stat(corpusPath).catch(() => null) : null
   if (existing && existing.size >= TARGET_BYTES) {
@@ -268,11 +219,8 @@ let reusedCorpus = false
 const corpusBytes = corpus!.bytes
 const MAX_CACHE_BYTES = envNum('BENCH_MAX_CACHE_BYTES', Math.ceil(corpusBytes * 1.5))
 
-// Stages 2-8 touch real R2. Wrap them so a dropped socket mid-run still
-// reaches the cleanup stage instead of stranding objects in the bucket.
 let failure: unknown = null
 try {
-  // ── 2. seed R2 (streamed upload of the whole corpus) ───────────────────────
   {
     const mark = storage.mark
     const t = performance.now()
@@ -285,7 +233,6 @@ try {
     })
   }
 
-  // ── 3. cold hydration ──────────────────────────────────────────────────────
   const coldDir = await scratch('cold')
   {
     const cp = new Checkpoint(checkpointConfig(coldDir, MAX_CACHE_BYTES))
@@ -311,7 +258,6 @@ try {
       await diskUsage(coldDir),
     )
 
-    // ── 4. warm searches on the hydrated generation ──────────────────────────
     const warm: number[] = []
     const beforeWarm = sampleMemory()
     const tWarm = performance.now()
@@ -349,7 +295,6 @@ try {
       await diskUsage(coldDir),
     )
 
-    // ── 5. write: clone → insert + close → streamed conditional upload ───
     {
       let cloneAndCallbackMs = 0
       const mark = storage.mark
@@ -382,7 +327,6 @@ try {
       )
     }
 
-    // ── 6. long read concurrent with a write ─────────────────────────────────
     {
       let release!: () => void
       const gate = new Promise<void>((r) => (release = r))
@@ -401,7 +345,6 @@ try {
         return first.length
       })
 
-      // Let the reader pin its generation before the writer publishes a new one.
       await new Promise((r) => setTimeout(r, 50))
       const tWrite = performance.now()
       await cp.write(key, async (p, exists) => {
@@ -440,14 +383,12 @@ try {
     await cp.closeAll()
   }
 
-  // ── 7. two Checkpoint instances writing from the same ETag ─────────────────
   {
     const dirA = await scratch('conflict-a')
     const dirB = await scratch('conflict-b')
     const cpA = new Checkpoint(checkpointConfig(dirA, MAX_CACHE_BYTES))
     const cpB = new Checkpoint(checkpointConfig(dirB, MAX_CACHE_BYTES))
 
-    // Both instances hydrate the same current generation, so both hold one ETag.
     const tHydrate = performance.now()
     await Promise.all([cpA.read(key, async () => undefined), cpB.read(key, async () => undefined)])
     const hydrateMs = performance.now() - tHydrate
@@ -469,7 +410,6 @@ try {
     await Promise.all([cpA.write(key, append('a', 'benchalpha')), cpB.write(key, append('b', 'benchbeta'))])
     const wall = performance.now() - t
 
-    // A cold third instance proves both mutations are in the winning object.
     const dirC = await scratch('conflict-c')
     const cpC = new Checkpoint(checkpointConfig(dirC, MAX_CACHE_BYTES))
     const survived = await cpC.read(key, async (p) => {
@@ -497,7 +437,6 @@ try {
     await Promise.all([cpA.closeAll(), cpB.closeAll(), cpC.closeAll()])
   }
 
-  // ── 8. cache budget: more scopes than maxCacheBytes allows ─────────────────
   let budgetLeg: Record<string, unknown> = { skipped: 'maxCacheBytes not implemented' }
   {
     const probe = new Checkpoint(checkpointConfig(await scratch('probe'), 1))
@@ -515,7 +454,6 @@ try {
       const seedMs = performance.now() - tSeed
 
       const dir = await scratch('budget')
-      // Budget deliberately holds fewer than SCOPES generations at once.
       const budget = Math.ceil(corpusBytes * 1.5)
       const cp = new Checkpoint(checkpointConfig(dir, budget))
 
@@ -532,7 +470,6 @@ try {
       const wall = performance.now() - t
       const finalDisk = await diskUsage(dir)
 
-      // Pin one generation and confirm eviction refuses to delete it.
       let releasePin!: () => void
       const pinGate = new Promise<void>((r) => (releasePin = r))
       const pinned = cp.read(scopeKeys[scopeKeys.length - 1]!, async (p) => {
@@ -563,13 +500,11 @@ try {
       console.log('\n── 8. maxCacheBytes eviction ──\n   skipped: Checkpoint has no maxCacheBytes yet (baseline run)')
     }
   }
-
 } catch (err) {
   failure = err
   console.error(`\n[bench] stage failed, proceeding to cleanup: ${(err as Error).message}`)
 }
 
-// ── 9. cleanup ─────────────────────────────────────────────────────────────
 {
   const t = performance.now()
   const removed = await purgePrefix(storage, prefix)
@@ -591,7 +526,6 @@ try {
   })
 }
 
-// ── summary ────────────────────────────────────────────────────────────────
 const totalMs = stages.reduce((a, s) => a + s.wallMs, 0)
 const peakRss = Math.max(...stages.map((s) => s.memory.rssBytes))
 const peakHeap = Math.max(...stages.map((s) => s.memory.heapUsedBytes))

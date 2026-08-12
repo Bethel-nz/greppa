@@ -1,6 +1,8 @@
 import { defineConfig } from '@bethel-nz/sumi';
+  import type { Context } from 'hono';
   import { fileURLToPath } from 'url';
   import path from 'path';
+  import { jsonError } from './lib/errors';
 
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
@@ -14,18 +16,16 @@ import { defineConfig } from '@bethel-nz/sumi';
     routesDir: './routes',
     middlewareDir: './middleware',
 
+    hooks: {
+      onError: (error: Error, c: Context) => jsonError(c, error),
+    },
+
     // Static files are mounted under the app's basePath automatically by Sumi,
     // so '/public/*' becomes '/api/v1/public/*'
     static: [
       { path: '/public/*', root: PUBLIC_DIR },
     ],
 
-    // This ensures even JSON responses hint the browser to fetch the favicon
-    // hooks: {
-    //   onResponse: async (c) => {
-    //     c.header('Link', '</favicon.ico?v=1>; rel="icon"; type="image/x-icon"', { append: true });
-    //   },
-    // },
 
     openapi: {
       documentation: {

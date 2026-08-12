@@ -1,0 +1,518 @@
+# Greppa test inventory
+
+Shareable map of what the suite covers. Structure is **file → `describe` → `test`/`it`**.
+
+## Snapshot
+
+| Metric | Count |
+|--------|------:|
+| Test files | 37 |
+| Describe suites | 74 |
+| Individual tests | 339 |
+
+## By area
+
+| Area | Tests |
+|------|------:|
+| Memory: scope store (core engine) | 118 |
+| HTTP / server integration | 101 |
+| SDK client | 53 |
+| Checkpoint / durable object cache | 30 |
+| Memory: embeddings | 17 |
+| Memory: assets / placement | 12 |
+| Storage drivers | 8 |
+
+## Full tree
+
+```
+
+lib/memory/assets.test.ts  (8 tests)
+└── assets  (8)
+    ├── key is scoped and content-addressed
+    ├── sha256Hex is stable and 64 hex characters
+    ├── stores an asset and returns its digest
+    ├── is idempotent: storing the same bytes twice uploads once
+    ├── round-trips the exact bytes
+    ├── returns null for a missing asset
+    ├── different scopes do not share asset keys
+    └── survives a concurrent writer that wins the race
+
+lib/memory/embedding/conformance.test.ts  (11 tests)
+├── provider contract: ${name}  (5)
+│   ├── declares a non-empty id, positive dimension and batch size
+│   ├── returns one vector per input at exactly the declared dimension
+│   ├── returns L2-normalized vectors
+│   ├── accepts both document and query kinds
+│   └── returns an empty array for empty input
+└── provider registry  (6)
+    ├── defaults to the deterministic provider
+    ├── honours EMBEDDING_DIM
+    ├── rejects a non-numeric EMBEDDING_DIM
+    ├── rejects an unknown provider
+    ├── requires a key for a network provider
+    └── openai-compatible requires base url, model and dimension
+
+lib/memory/embedding/provider.test.ts  (6 tests)
+├── l2normalize  (2)
+│   ├── scales a vector to unit length
+│   └── leaves an all-zero vector alone instead of dividing by zero
+└── deterministic provider  (4)
+    ├── declares its identity and dimension
+    ├── returns one unit vector per input, of the declared dimension
+    ├── is deterministic: same text yields the same vector
+    └── similar text is closer than unrelated text
+
+lib/memory/placement.test.ts  (4 tests)
+└── placementFromQuery  (4)
+    ├── an absent param is no constraint, not a null placement
+    ├── a present param names the placement
+    ├── an empty param asks for records with nothing in that slot
+    └── the two hierarchies are read independently
+
+lib/memory/scope-store/chunker.test.ts  (7 tests)
+└── chunkText  (7)
+    ├── returns a short note as a single chunk
+    ├── returns nothing for empty or whitespace-only input
+    ├── splits long text into multiple chunks near the target size
+    ├── prefers paragraph boundaries
+    ├── overlaps consecutive chunks so context is not cut mid-idea
+    ├── hard-splits a single unbroken run with no paragraph or sentence breaks
+    └── never emits an empty chunk
+
+lib/memory/scope-store/decay.test.ts  (14 tests)
+├── temporalWeight  (6)
+│   ├── disabled decay is always neutral
+│   ├── a brand new memory is at full strength
+│   ├── one half-life lands halfway between floor and 1
+│   ├── the floor is a lower bound no age can breach
+│   ├── decay is monotonic in age
+│   └── a future timestamp clamps to full strength rather than exceeding it
+├── decayConfigFromEnv  (3)
+│   ├── is off unless explicitly enabled
+│   ├── reads half-life and floor
+│   └── rejects a nonsense floor rather than producing negative weights
+└── decay in retrieval  (5)
+    ├── with decay off, age does not affect ranking
+    ├── with decay on, the fresher memory outranks the stale one
+    ├── a stale memory is down-ranked, never removed
+    ├── recordAccess reinforces a memory back to full strength
+    └── access_count increments so reinforcement is observable
+
+lib/memory/scope-store/entity.test.ts  (11 tests)
+├── legacyEntityKey  (1)
+│   └── is unchanged: node ids already on disk depend on it
+├── canonicalEntityKey  (7)
+│   ├── folds case, accents and punctuation
+│   ├── drops a trailing legal suffix
+│   ├── never strips a suffix that is the whole name
+│   ├── drops a possessive
+│   ├── singularizes the final token only
+│   ├── leaves proper nouns that merely end in s alone
+│   └── is empty for input with no letters or digits
+└── entityAliasKeys  (3)
+    ├── offers both spellings when they differ
+    ├── collapses to one key when they agree
+    └── never yields an empty key
+
+lib/memory/scope-store/fusion.test.ts  (6 tests)
+└── reciprocalRankFusion  (6)
+    ├── ranks an item appearing high in both lists above one appearing in only one
+    ├── includes items unique to a single list
+    ├── scores by summed reciprocal rank
+    ├── respects the limit
+    ├── handles empty lists
+    └── is order-stable for equal scores
+
+lib/memory/scope-store/reembed.test.ts  (5 tests)
+└── reembedScope  (5)
+    ├── migrates to a new provider at a different dimension, preserving content
+    ├── the old provider can no longer open the migrated file
+    ├── preserves lexical search across the migration
+    ├── is a no-op returning 0 on an empty scope
+    └── refuses to silently drop an image chunk it cannot re-embed
+
+lib/memory/scope-store/schema.test.ts  (8 tests)
+└── schema  (8)
+    ├── creates every table
+    ├── writes the provider identity into meta
+    ├── creates the vector table at the provider dimension, not a constant
+    ├── rejects a vector of the wrong dimension
+    ├── assertIdentity passes for the same provider
+    ├── assertIdentity throws when the dimension differs
+    ├── readIdentity returns null on an empty database
+    └── foreign keys cascade from documents to chunks
+
+lib/memory/scope-store/store.test.ts  (67 tests)
+├── scope store  (9)
+│   ├── inserts a document and finds it by exact keyword
+│   ├── populates all three tables in one transaction
+│   ├── does not index an image chunk with no text, but still stores its vector
+│   ├── a query with FTS metacharacters does not throw
+│   ├── returns vector hits even when no keyword matches
+│   ├── respects the limit
+│   ├── reopening an existing file preserves its contents
+│   ├── reopening writable with a different provider throws instead of silently rewriting identity
+│   └── leaves no -wal or -shm sidecar behind
+├── FTS query sanitisation  (2)
+│   ├── a stopword-only query does not drag in unrelated documents
+│   └── keeps distinctive short-ish terms and still matches lexically
+├── ACL enforcement  (5)
+│   ├── an unprivileged reader sees only public documents
+│   ├── a named principal sees their own restricted document
+│   ├── role and group membership grant access, case-insensitively
+│   ├── a mismatched tenant sees nothing restricted
+│   └── omitting the ACL context returns everything (unenforced internal use)
+├── folder scoping  (6)
+│   ├── a folder query returns only that folder, not public documents outside it
+│   ├── ACL alone would have leaked the public document — folder filter is what stops it
+│   ├── folderId null scopes to unfiled documents only
+│   ├── a member of one folder cannot read another folder even by naming it
+│   ├── moveToPlacement relabels a chat and adopts the folder ACL, copying nothing
+│   └── moving out of a folder keeps the ACL restrictive
+├── workspace and folder are separate hierarchies  (10)
+│   ├── a workspace owns its folders: querying the workspace returns filed and unfiled alike
+│   ├── a folder narrows within its workspace without reaching the same folder name elsewhere
+│   ├── a folder name alone is not a hierarchy: it spans workspaces unless one is named
+│   ├── personal memory is the null workspace, not a workspace with no folder
+│   ├── an unscoped query still sees every hierarchy
+│   ├── moving into a folder keeps the document in its workspace
+│   ├── promoting a personal document sets both placements in one move
+│   ├── an omitted placement is left alone, an explicit null clears it
+│   ├── a move that names no placement and no ACL touches nothing
+│   └── moving a document id that is not in the store reports nothing moved
+├── placement migration  (1)
+│   └── a pre-split store holding workspace ids in folder_id is rewritten on open
+├── graph-driven retrieval  (5)
+│   ├── an edge from an entity named in the question pulls in a document search would miss
+│   ├── the same corpus without edges leaves that document unreachable
+│   ├── the walk follows a second hop away from the seed entity
+│   ├── a question naming no known entity retrieves exactly what it did before
+│   └── graph candidates are still filtered by placement
+├── entity resolution  (5)
+│   ├── reports the entity a query actually resolved to
+│   ├── offers the stored spelling when a query names an entity it cannot resolve
+│   ├── offers nothing when no stored entity resembles the query
+│   ├── never suggests a name it already reported as matched
+│   └── resolves nothing against a store that has no graph
+├── entity aliasing  (7)
+│   ├── resolves an entity written without its legal suffix
+│   ├── resolves the exact stored spelling too
+│   ├── lists edges for a spelling that is not the stored one
+│   ├── an unknown entity still lists nothing
+│   ├── suggests a near name without a full-table scan
+│   ├── a scope file predating the alias index keeps its old behaviour
+│   └── an entity whose stored name carries punctuation is now reachable from a query
+├── deleted documents  (5)
+│   ├── a tombstoned document disappears from search
+│   ├── it disappears from stored facts
+│   ├── its relationships stop being listed
+│   ├── deleting is idempotent and reports what it actually changed
+│   └── the surviving document is untouched
+├── recall under a filter  (2)
+│   ├── a reader still receives every document they are allowed to see
+│   └── an unfiltered search is still answered from the first pass
+└── document field updates  (10)
+    ├── image chunks, which carry the title as their text  (4)
+    │   ├── a rename moves the image chunk text with it
+    │   ├── the full-text index stops answering to the old title
+    │   ├── a text chunk that happens to read like the title is left alone
+    │   └── renaming to the same title changes nothing
+    ├── a renamed document is cited under its new title
+    ├── sourceUrl can be rewritten, and cleared
+    ├── an omitted field is left alone
+    ├── chunk text is untouched, so the embeddings still describe it
+    ├── nothing to change reports zero without touching the row
+    └── a forgotten document cannot be renamed back into view
+
+lib/storage.test.ts  (8 tests)
+├── storage driver selection  (4)
+│   ├── STORAGE_DRIVER picks the backend
+│   ├── the backend is built once and reused
+│   ├── an unknown driver names the ones that exist instead of failing silently
+│   └── a driver name is matched case- and whitespace-insensitively
+└── bringing your own backend  (4)
+    ├── a registered driver is selectable by name
+    ├── setStorage wins over STORAGE_DRIVER
+    ├── clearing the injected backend falls back to the configured driver
+    └── re-registering the active driver takes effect rather than serving the cache
+
+packages/greppa-sdk/tests/chat.test.ts  (4 tests)
+└── chat handle  (4)
+    ├── tokens iterable yields content tokens
+    ├── sourcesStream yields batch of sources
+    ├── done resolves with full ChatResult
+    └── ask convenience method works
+
+packages/greppa-sdk/tests/errors.test.ts  (14 tests)
+├── error model  (4)
+│   ├── a failure carries the server code, status and advice
+│   ├── a code-less body still gives a branchable code
+│   ├── rate limits and server faults are retryable, client faults are not
+│   └── a transport failure becomes a retryable network_error
+├── retries  (5)
+│   ├── a GET is replayed past a server fault
+│   ├── a GET gives up after the retry budget and throws the last error
+│   ├── a POST is never replayed — it could double-write
+│   ├── a 404 is not retried
+│   └── a Retry-After longer than the cap surfaces the 429 instead of sleeping on it
+├── timeouts  (3)
+│   ├── a stalled request fails as a timeout, not a generic abort
+│   ├── a timeout is not retried, however replayable the method
+│   └── a per-call timeout overrides the client default
+└── cancellation  (2)
+    ├── an aborted call rejects and is not retried
+    └── an already-aborted signal fails without reaching the network
+
+packages/greppa-sdk/tests/fanout.test.ts  (6 tests)
+└── chat stream queue  (6)
+    ├── reports completion on every next() after the stream ends
+    ├── serves two independent consumers of the same channel
+    ├── replays buffered events to a consumer that attaches late
+    ├── exposes return() so breaking out of a loop terminates cleanly
+    ├── does not raise an unhandled rejection when done is never awaited
+    └── still delivers the failure to a caller that does await done
+
+packages/greppa-sdk/tests/knowledge.test.ts  (3 tests)
+└── knowledge namespace  (3)
+    ├── list passes session headers
+    ├── ingest sends json body
+    └── forget posts the ids and reports how many were still there
+
+packages/greppa-sdk/tests/memory.test.ts  (12 tests)
+├── memory namespace  (6)
+│   ├── add posts the memory and carries session headers
+│   ├── add sends edges through unchanged
+│   ├── search posts the query and optional limit
+│   ├── search omits limit when it is not given
+│   ├── edges builds a query string and surfaces suggestions
+│   └── edges with no filters sends no query string
+└── workspace binding  (6)
+    ├── workspace() scopes every call made through it
+    ├── folder() nests inside a workspace
+    ├── binding is immutable: the parent namespace is unaffected
+    ├── a per-call placement overrides the bound one
+    ├── null means records with nothing in that slot, and survives the query string
+    └── an unbound namespace constrains nothing
+
+packages/greppa-sdk/tests/session-manager.test.ts  (6 tests)
+└── session ownership  (6)
+    ├── namespaces share one session instead of minting their own
+    ├── namespaces starting in parallel still mint only once
+    ├── a chat scope gets its own session
+    ├── history on a fresh client does not mint a session
+    ├── history returns the stored conversation once a session exists
+    └── reset on a fresh client touches the network not at all
+
+packages/greppa-sdk/tests/session.test.ts  (4 tests)
+├── BrowserSession  (3)
+│   ├── returns null for unknown scope
+│   ├── round-trips a session record per scope
+│   └── delete removes only the named scope
+└── ServerSession  (1)
+    └── round-trips per scope in memory
+
+packages/greppa-sdk/tests/transport.test.ts  (4 tests)
+├── parseSseBlock  (3)
+│   ├── parses id, event, and data
+│   ├── skips comment lines
+│   └── returns null on empty
+└── sseIterator  (1)
+    └── yields parsed events from a fetch-like stream
+
+tests/server/better-auth.test.ts  (3 tests)
+└── Better Auth integration  (3)
+    ├── GET /auth/* delegates to Better Auth handler
+    ├── GET /me rejects unauthenticated requests
+    └── GET /me returns authenticated user and session
+
+tests/server/chat-flow.test.ts  (3 tests)
+└── chat flow  (3)
+    ├── POST /chat enqueues + writes user msg + meta
+    ├── GET /chat/stream rejects cross-session access
+    └── GET /chat/history returns messages ordered by at
+
+tests/server/chat-lifecycle.test.ts  (4 tests)
+└── chat lifecycle  (4)
+    ├── beginRun skips when meta status is terminal
+    ├── beginRun resets the events log on a fresh (non-terminal) run
+    ├── beginRun proceeds when there is no meta yet
+    └── setMeta merges fields into the meta hash
+
+tests/server/chat-resume.test.ts  (8 tests)
+└── chat stream resume  (8)
+    ├── resumes from cursor: replays only events after last-event-id
+    ├── no cursor replays the full log and closes on done
+    ├── unparseable (legacy ULID) cursor triggers a full replay
+    ├── terminal meta with no terminal frame in the log closes with an error
+    ├── stale cursor beyond max seq triggers a full replay
+    ├── not_found for unknown message carries no id
+    ├── stalled stream emits a stalled error within the bound
+    └── replays when the store returns already-deserialized object members
+
+tests/server/chat-tools.test.ts  (6 tests)
+└── chat agent tools  (6)
+    ├── search_knowledge  (3)
+    │   ├── queries the user scope, maps sources, and emits search cues
+    │   ├── passes document identity through so a citation is traceable
+    │   └── an empty result yields no sources and a safe fallback string
+    └── remember  (3)
+        ├── writes a durable fact to the user scope
+        ├── is idempotent: a replay of the same fact does not double-write
+        └── a different fact is written even after a prior remember
+
+tests/server/config.test.ts  (3 tests)
+└── greppa config  (3)
+    ├── throws if GREPPA_SESSION_SECRET missing
+    ├── uses defaults for ttls and flags
+    └── parses overrides from env
+
+tests/server/emit.test.ts  (2 tests)
+└── emit durable log  (2)
+    ├── writes events to the ZSET scored by seq with id = String(seq)
+    └── also emits to realtime for live tailing
+
+tests/server/hmac.test.ts  (5 tests)
+└── hmac  (5)
+    ├── sign produces hex of length 64
+    ├── verify accepts valid signature
+    ├── verify rejects tampered id
+    ├── verify rejects wrong secret
+    └── verify rejects malformed sig
+
+tests/server/interop.test.ts  (4 tests)
+└── SDK <-> Server Interop  (4)
+    ├── SDK mints a session and POST /chat persists the user message
+    ├── SDK replays a finished message from the server-side ZSET
+    ├── SDK resume with last-event-id replays only events after that id
+    └── SDK resume against a foreign sessionId surfaces an error event
+
+tests/server/knowledge-e2e.test.ts  (9 tests)
+└── end to end: a file becomes memory  (9)
+    ├── upload over HTTP, flush to storage, then answer from a cold read
+    ├── re-uploading the same file is a no-op, not a second copy
+    ├── the same text written without a stable id does duplicate its chunks
+    ├── rejects a file over the inline limit before parsing it
+    ├── rejects a file with no readable text rather than storing an empty document
+    ├── rejects an unauthenticated upload
+    ├── rejects a body that is not multipart
+    ├── rejects a multipart body with no file field
+    └── a caller-supplied title wins over the filename
+
+tests/server/placement-e2e.test.ts  (6 tests)
+├── retrieval honours both hierarchies over HTTP  (2)
+│   ├── a folder query returns only what is filed in it
+│   └── the unfiled slot of a workspace is distinct from the workspace itself
+└── POST /knowledge/move  (4)
+    ├── files a loose document into a folder and retrieval follows it
+    ├── unplaces a document when the placement is explicitly null
+    ├── rejects a move that names no placement rather than reporting a no-op success
+    └── reports nothing moved for a document that is not in the caller scope
+
+tests/server/scoped-memory.test.ts  (26 tests)
+├── scoped-service  (8)
+│   ├── addScopedMemory creates the scope file and returns an indexed document
+│   ├── a written memory round-trips through storage and is retrievable
+│   ├── a second memory appends, it does not overwrite the first
+│   ├── a long memory is chunked into several retrievable pieces
+│   ├── searchScopedMemory on an empty scope returns no hits, not an error
+│   ├── one user cannot retrieve another user memory (scope isolation)
+│   ├── refuses to store an empty memory rather than writing a vectorless document
+│   └── hits carry the fields lib/chat/tools.ts consumes
+├── standing facts  (4)
+│   ├── returns only facts, never notes or archived conversations
+│   ├── orders newest first and honours the budget
+│   ├── reassembles a multi-chunk fact in chunk order
+│   └── returns nothing for a scope that was never written
+├── retrieveScopedContext  (2)
+│   ├── builds context without calling a model
+│   └── returns an empty result rather than throwing on an empty scope
+├── uploaded documents are memory  (2)
+│   ├── a stored document is retrievable later and carries its identity
+│   └── documents and facts share one scope and both surface
+├── cross-scope fusion  (4)
+│   ├── chunk ids that collide across stores stay separate results
+│   ├── a top hit from either scope outranks a low-ranked one from the other
+│   ├── honours the limit
+│   └── an empty scope contributes nothing and changes no order
+└── deduplication  (6)
+    ├── re-adding the same id reports a duplicate and does not store a second copy
+    ├── a re-upload under a different filename is still the same document
+    ├── different content from the same user is a different document
+    ├── identical content from different users does not collide
+    ├── a file stored as memory answers a question in a later, unrelated session
+    └── an id-less write is never treated as a duplicate
+
+tests/server/security.test.ts  (6 tests)
+├── isInjectionAttempt  (3)
+│   ├── flags ignore previous instructions
+│   ├── flags developer mode
+│   └── passes innocuous text
+└── scanRetrievedSnippet  (3)
+    ├── redacts pattern matches inline
+    ├── passes clean text through
+    └── returns empty string for empty input
+
+tests/server/session-auth.test.ts  (2 tests)
+└── session-auth middleware (chat auth)  (2)
+    ├── rejects requests with no session header
+    └── accepts conversation id and sets anonymous context
+
+tests/server/session.test.ts  (1 tests)
+└── POST /session  (1)
+    └── returns sessionId and ttlMs
+
+tests/server/upload-limits.test.ts  (13 tests)
+├── maxUploadBytes  (4)
+│   ├── defaults to 25 MiB
+│   ├── is overridable by env
+│   ├── falls back to the default on junk rather than disabling the limit
+│   └── formats limits the way the error messages read
+├── POST /knowledge/presign  (4)
+│   ├── issues a URL when the declared size is under the ceiling
+│   ├── refuses to issue a URL when the declared size is over the ceiling
+│   ├── honours a lowered ceiling
+│   └── still issues a URL when no size is declared, since ingest re-checks
+└── POST /knowledge/ingest  (5)
+    ├── queues the workflow for an object inside the limit
+    ├── rejects an object that is over the limit despite what presign was told
+    ├── removes the oversized object instead of leaving it unreferenced
+    ├── 404s when nothing was actually uploaded to the key
+    └── accepts an object exactly at the ceiling
+
+utils/checkpoint/checkpoint.test.ts  (30 tests)
+├── Checkpoint  (25)
+│   ├── read on a missing object throws NotFoundError
+│   ├── write creates + uploads; a later read reuses the cache (no re-download)
+│   ├── write signals exists=false for a new object and true once it has been written
+│   ├── a new object never leaves an invalid empty local file behind
+│   ├── read operates on an isolated snapshot; a concurrent write does not tear it
+│   ├── open set stays bounded across many users; evicted users re-hydrate
+│   ├── evictIdle drops idle entries but never an in-use one
+│   ├── writes to the same object serialize; different users run in parallel
+│   ├── etag conflict discards stale bytes, rehydrates, and reruns the mutation
+│   ├── a persistent conflict surfaces ConflictError
+│   ├── non-404 storage errors propagate (never treated as absence)
+│   ├── startEviction sweeps idle entries on an interval
+│   ├── read after a failed first write throws NotFoundError, not a raw fs error
+│   ├── a failed first flush leaves no partial generation and the next write starts clean
+│   ├── a cache file deleted out from under the checkpoint fails one read, then recovers
+│   ├── a stale cache file from a previous process is cleared before create
+│   ├── keys cannot traverse outside the cache dir
+│   ├── closeAll stops the eviction timer
+│   ├── cacheBytes tracks the current generation and clears on eviction
+│   ├── a failed write leaves no bytes charged
+│   ├── maxCacheBytes evicts LRU entries even when maxOpen is not reached
+│   ├── never evicts an active reader, and reports the resulting overage
+│   ├── a retired generation stays charged while a reader still holds it
+│   ├── omitting maxCacheBytes keeps the maxOpen-only behaviour
+│   └── delete removes the object and its local copy
+└── sweepOrphans  (5)
+    ├── removes generation files stranded by a previous process
+    ├── never touches a generation this instance is actively using
+    ├── leaves recent files alone even when they predate this instance
+    ├── ignores files that are not generations
+    └── is a no-op when the cache dir does not exist
+
+Total: 339 tests across 74 suites in 37 files.
+
+```
